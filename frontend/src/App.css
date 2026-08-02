@@ -1,0 +1,888 @@
+/* Seu CSS existente + Animações 3D das Bolinhas + Responsividade Completa */
+
+#root {
+  max-width: 1280px;
+  margin: 0 auto;
+  padding: 2rem;
+  text-align: center;
+}
+
+.logo {
+  height: 6em;
+  padding: 1.5em;
+  will-change: filter;
+  transition: filter 300ms;
+}
+
+.logo:hover {
+  filter: drop-shadow(0 0 2em #646cffaa);
+}
+
+.logo.react:hover {
+  filter: drop-shadow(0 0 2em #61dafbaa);
+}
+
+@keyframes logo-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  a:nth-of-type(2) .logo {
+    animation: logo-spin infinite 20s linear;
+  }
+}
+
+.card {
+  padding: 2em;
+}
+
+.read-the-docs {
+  color: #888;
+}
+
+/* ========================================
+   ANIMAÇÕES PGBA NEURAL & CUBO 3D
+   ======================================== */
+
+@layer utilities {
+  .font-outfit {
+    font-family: 'Outfit', sans-serif;
+  }
+
+  /* ===== ANIMAÇÕES ORIGINAIS REFINADAS ===== */
+  @keyframes floating {
+    0% { transform: translateY(0px); }
+    50% { transform: translateY(-8px); }
+    100% { transform: translateY(0px); }
+  }
+
+  @keyframes spin360 {
+    0% { 
+      transform: rotateY(0deg) scale(1); 
+      filter: drop-shadow(0 4px 20px rgba(59,130,246,0.25));
+    }
+    50% { 
+      transform: rotateY(180deg) scale(0.95); 
+      filter: drop-shadow(0 8px 32px rgba(139,92,246,0.35));
+    }
+    100% { 
+      transform: rotateY(360deg) scale(1); 
+      filter: drop-shadow(0 4px 20px rgba(59,130,246,0.25));
+    }
+  }
+
+  @keyframes dash {
+    to { stroke-dashoffset: -6; }
+  }
+
+  @keyframes pulsing {
+    0% { r: 3.5; opacity: 0.8; }
+    50% { r: 4.5; opacity: 1; filter: drop-shadow(0 0 8px #fff); }
+    100% { r: 3.5; opacity: 0.8; }
+  }
+
+  /* ===== ANIMAÇÕES 3D DAS BOLINHAS DO CUBO ===== */
+  
+  /* Movimento orbital no plano XY */
+  @keyframes orbit-xy {
+    0% { cx: 12; cy: 19; r: 2.2; }
+    16.66% { cx: 18; cy: 22; r: 3; }
+    33.33% { cx: 25; cy: 27; r: 2.2; }
+    50% { cx: 32; cy: 32; r: 1.8; }
+    66.66% { cx: 25; cy: 37; r: 2.2; }
+    83.33% { cx: 18; cy: 32; r: 3; }
+    100% { cx: 12; cy: 19; r: 2.2; }
+  }
+
+  /* Movimento simulando eixo Z com escala e opacidade */
+  @keyframes orbit-z {
+    0% { cx: 38; cy: 40; r: 2.2; opacity: 0.9; }
+    14.28% { cx: 35; cy: 35; r: 1.5; opacity: 0.6; }
+    28.57% { cx: 30; cy: 30; r: 1; opacity: 0.4; }
+    42.85% { cx: 25; cy: 27; r: 2.8; opacity: 1; }
+    57.14% { cx: 30; cy: 24; r: 3.2; opacity: 1; }
+    71.42% { cx: 35; cy: 29; r: 2.8; opacity: 0.8; }
+    85.71% { cx: 38; cy: 35; r: 2.4; opacity: 0.7; }
+    100% { cx: 38; cy: 40; r: 2.2; opacity: 0.9; }
+  }
+
+  /* Movimento 3D do núcleo central */
+  @keyframes core-3d {
+    0% { cx: 25; cy: 27; r: 3.2; }
+    14.28% { cx: 26; cy: 26; r: 3.8; }
+    28.57% { cx: 25; cy: 25; r: 3.2; }
+    42.85% { cx: 24; cy: 26; r: 2.8; }
+    57.14% { cx: 25; cy: 27; r: 3.2; }
+    71.42% { cx: 26; cy: 28; r: 3.6; }
+    85.71% { cx: 25; cy: 28; r: 3.4; }
+    100% { cx: 25; cy: 27; r: 3.2; }
+  }
+
+  /* Partícula flutuante 1 */
+  @keyframes particle-float-1 {
+    0% { cx: 15; cy: 25; opacity: 0.7; r: 1; }
+    14.28% { cx: 20; cy: 20; opacity: 1; r: 1.2; }
+    28.57% { cx: 25; cy: 25; opacity: 0.5; r: 0.8; }
+    42.85% { cx: 30; cy: 30; opacity: 0.8; r: 1.1; }
+    57.14% { cx: 25; cy: 35; opacity: 0.6; r: 0.9; }
+    71.42% { cx: 20; cy: 30; opacity: 1; r: 1.3; }
+    85.71% { cx: 18; cy: 28; opacity: 0.8; r: 1; }
+    100% { cx: 15; cy: 25; opacity: 0.7; r: 1; }
+  }
+
+  /* Partícula flutuante 2 */
+  @keyframes particle-float-2 {
+    0% { cx: 35; cy: 35; r: 0.8; }
+    11.11% { cx: 30; cy: 40; r: 1.2; }
+    22.22% { cx: 25; cy: 45; r: 0.8; }
+    33.33% { cx: 20; cy: 40; r: 0.5; }
+    44.44% { cx: 25; cy: 35; r: 0.8; }
+    55.55% { cx: 30; cy: 30; r: 1; }
+    66.66% { cx: 32; cy: 32; r: 1.1; }
+    77.77% { cx: 34; cy: 34; r: 0.9; }
+    88.88% { cx: 35; cy: 36; r: 0.7; }
+    100% { cx: 35; cy: 35; r: 0.8; }
+  }
+
+  /* Animação do núcleo interno */
+  @keyframes core-inner {
+    0% { r: 1.5; opacity: 0.6; }
+    25% { r: 1.8; opacity: 0.8; }
+    50% { r: 1.2; opacity: 0.4; }
+    75% { r: 1.6; opacity: 0.7; }
+    100% { r: 1.5; opacity: 0.6; }
+  }
+
+  /* Animação profissional do pulse */
+  @keyframes professional-pulse {
+    0% { 
+      r: 3.2; 
+      opacity: 0.9; 
+    }
+    50% { 
+      r: 3.8; 
+      opacity: 1; 
+    }
+    100% { 
+      r: 3.2; 
+      opacity: 0.9; 
+    }
+  }
+
+  /* ===== ANIMAÇÕES DE ENERGIA E AURA ===== */
+  @keyframes energy-aura {
+    0% { 
+      transform: scale(2.5); 
+      opacity: 0.2; 
+    }
+    50% { 
+      transform: scale(4); 
+      opacity: 0.05; 
+    }
+    100% { 
+      transform: scale(2.5); 
+      opacity: 0.2; 
+    }
+  }
+
+  @keyframes energy-ring {
+    0% { 
+      transform: rotate(0deg) scale(0.8); 
+      opacity: 0.3; 
+    }
+    50% { 
+      transform: rotate(180deg) scale(1.2); 
+      opacity: 0.6; 
+    }
+    100% { 
+      transform: rotate(360deg) scale(0.8); 
+      opacity: 0.3; 
+    }
+  }
+
+  @keyframes energy-ring-reverse {
+    0% { 
+      transform: rotate(360deg) scale(0.9); 
+      opacity: 0.2; 
+    }
+    50% { 
+      transform: rotate(180deg) scale(1.3); 
+      opacity: 0.5; 
+    }
+    100% { 
+      transform: rotate(0deg) scale(0.9); 
+      opacity: 0.2; 
+    }
+  }
+
+  /* ===== ANIMAÇÕES DE FLUXO DE DADOS ===== */
+  @keyframes data-flow {
+    0% { stroke-dashoffset: 0; }
+    100% { stroke-dashoffset: -24; }
+  }
+
+  @keyframes data-dash {
+    0% { stroke-dashoffset: 0; }
+    100% { stroke-dashoffset: -16; }
+  }
+
+  /* ===== ANIMAÇÕES DOS NÚCLEOS E NÓS ===== */
+  @keyframes core-energy {
+    0% { 
+      r: 4; 
+      opacity: 1; 
+    }
+    50% { 
+      r: 8; 
+      opacity: 0.8; 
+      filter: drop-shadow(0 0 20px currentColor); 
+    }
+    100% { 
+      r: 4; 
+      opacity: 1; 
+    }
+  }
+
+  @keyframes core-processing {
+    0% { 
+      r: 6; 
+      opacity: 1; 
+      fill: #ffffff; 
+    }
+    25% { 
+      r: 10; 
+      opacity: 0.9; 
+      fill: #00ffff; 
+    }
+    50% { 
+      r: 8; 
+      opacity: 1; 
+      fill: #ff00ff; 
+    }
+    75% { 
+      r: 12; 
+      opacity: 0.8; 
+      fill: #00ff88; 
+    }
+    100% { 
+      r: 6; 
+      opacity: 1; 
+      fill: #ffffff; 
+    }
+  }
+
+  @keyframes idle-pulse {
+    0% { 
+      r: 4; 
+      opacity: 0.8; 
+    }
+    50% { 
+      r: 6; 
+      opacity: 1; 
+    }
+    100% { 
+      r: 4; 
+      opacity: 0.8; 
+    }
+  }
+
+  @keyframes node-pulse {
+    0% { 
+      r: 2.5; 
+      opacity: 0.9; 
+      fill: #ffffff; 
+    }
+    50% { 
+      r: 4; 
+      opacity: 1; 
+      fill: #00f5ff; 
+      filter: drop-shadow(0 0 8px #00f5ff); 
+    }
+    100% { 
+      r: 2.5; 
+      opacity: 0.9; 
+      fill: #ffffff; 
+    }
+  }
+
+  /* ===== ANIMAÇÕES DE PARTÍCULAS ORBITAIS (PRISMA) ===== */
+  @keyframes particle-orbit-1 {
+    0% { 
+      cx: 50; 
+      cy: 40; 
+      opacity: 0; 
+    }
+    25% { 
+      opacity: 1; 
+    }
+    50% { 
+      cx: 110; 
+      cy: 80; 
+    }
+    75% { 
+      opacity: 1; 
+    }
+    100% { 
+      cx: 50; 
+      cy: 120; 
+      opacity: 0; 
+    }
+  }
+
+  @keyframes particle-orbit-2 {
+    0% { 
+      cx: 110; 
+      cy: 70; 
+      opacity: 0; 
+    }
+    25% { 
+      opacity: 1; 
+    }
+    50% { 
+      cx: 50; 
+      cy: 110; 
+    }
+    75% { 
+      opacity: 1; 
+    }
+    100% { 
+      cx: 90; 
+      cy: 40; 
+      opacity: 0; 
+    }
+  }
+
+  @keyframes particle-orbit-3 {
+    0% { 
+      cx: 70; 
+      cy: 100; 
+      opacity: 0; 
+    }
+    25% { 
+      opacity: 1; 
+    }
+    50% { 
+      cx: 40; 
+      cy: 60; 
+    }
+    75% { 
+      opacity: 1; 
+    }
+    100% { 
+      cx: 120; 
+      cy: 80; 
+      opacity: 0; 
+    }
+  }
+
+  /* ===== ANIMAÇÕES DE FLUXO DE PARTÍCULAS ORIGINAIS ===== */
+  @keyframes particle-flow-1 {
+    0% { 
+      cx: 12; 
+      cy: 19; 
+      opacity: 0; 
+    }
+    20% { 
+      opacity: 0.8; 
+    }
+    80% { 
+      opacity: 0.8; 
+    }
+    100% { 
+      cx: 25; 
+      cy: 27; 
+      opacity: 0; 
+    }
+  }
+
+  @keyframes particle-flow-2 {
+    0% { 
+      cx: 38; 
+      cy: 40; 
+      opacity: 0; 
+    }
+    20% { 
+      opacity: 0.8; 
+    }
+    80% { 
+      opacity: 0.8; 
+    }
+    100% { 
+      cx: 25; 
+      cy: 27; 
+      opacity: 0; 
+    }
+  }
+
+  @keyframes particle-flow-3 {
+    0% { 
+      cx: 25; 
+      cy: 15; 
+      opacity: 0; 
+    }
+    20% { 
+      opacity: 0.8; 
+    }
+    80% { 
+      opacity: 0.8; 
+    }
+    100% { 
+      cx: 25; 
+      cy: 40; 
+      opacity: 0; 
+    }
+  }
+
+  /* ===== ANIMAÇÕES DE STATUS ===== */
+  @keyframes status-active {
+    0% { 
+      opacity: 1; 
+      transform: scale(1); 
+    }
+    50% { 
+      opacity: 0.6; 
+      transform: scale(1.3); 
+    }
+    100% { 
+      opacity: 1; 
+      transform: scale(1); 
+    }
+  }
+
+  @keyframes status-standby {
+    0% { opacity: 0.7; }
+    50% { opacity: 1; }
+    100% { opacity: 0.7; }
+  }
+
+  @keyframes status-blink {
+    0% { opacity: 1; transform: scale(1); }
+    50% { opacity: 0.5; transform: scale(1.2); }
+    100% { opacity: 1; transform: scale(1); }
+  }
+
+  @keyframes status-idle {
+    0% { opacity: 0.6; }
+    50% { opacity: 1; }
+    100% { opacity: 0.6; }
+  }
+
+  /* ===== CLASSES UTILITÁRIAS NEON ===== */
+  .neon-glow-light {
+    filter: drop-shadow(0 0 10px currentColor) drop-shadow(0 0 20px currentColor);
+  }
+
+  .neon-text-light {
+    text-shadow: 
+      0 0 5px currentColor,
+      0 0 10px currentColor,
+      0 0 15px currentColor;
+  }
+
+  .neon-ultra-glow {
+    filter: 
+      drop-shadow(0 0 5px currentColor)
+      drop-shadow(0 0 10px currentColor)
+      drop-shadow(0 0 20px currentColor)
+      drop-shadow(0 0 40px currentColor);
+  }
+
+  .neon-text-ultra {
+    text-shadow: 
+      0 0 2px currentColor,
+      0 0 5px currentColor,
+      0 0 10px currentColor,
+      0 0 20px currentColor,
+      0 0 40px currentColor;
+  }
+
+  /* ===== GRADIENTE RADIAL UTILITÁRIO ===== */
+  .bg-gradient-radial {
+    background: radial-gradient(circle, var(--tw-gradient-stops));
+  }
+
+  /* ===== CLASSES CSS PARA MOVIMENTOS ALTERNATIVOS ===== */
+  .orbit-xy-css {
+    animation: orbit-xy-transform 4s ease-in-out infinite;
+  }
+
+  .orbit-z-css {
+    animation: orbit-z-transform 5s ease-in-out infinite;
+  }
+
+  .core-3d-css {
+    animation: core-3d-transform 6s ease-in-out infinite;
+  }
+
+  /* ===== TRANSFORMAÇÕES CSS COMO FALLBACK ===== */
+  @keyframes orbit-xy-transform {
+    0% { transform: translate(12px, 19px) scale(1); }
+    16.66% { transform: translate(18px, 22px) scale(1.36); }
+    33.33% { transform: translate(25px, 27px) scale(1); }
+    50% { transform: translate(32px, 32px) scale(0.82); }
+    66.66% { transform: translate(25px, 37px) scale(1); }
+    83.33% { transform: translate(18px, 32px) scale(1.36); }
+    100% { transform: translate(12px, 19px) scale(1); }
+  }
+
+  @keyframes orbit-z-transform {
+    0% { transform: translate(38px, 40px) scale(1); opacity: 0.9; }
+    14.28% { transform: translate(35px, 35px) scale(0.68); opacity: 0.6; }
+    28.57% { transform: translate(30px, 30px) scale(0.45); opacity: 0.4; }
+    42.85% { transform: translate(25px, 27px) scale(1.27); opacity: 1; }
+    57.14% { transform: translate(30px, 24px) scale(1.45); opacity: 1; }
+    71.42% { transform: translate(35px, 29px) scale(1.27); opacity: 0.8; }
+    85.71% { transform: translate(38px, 35px) scale(1.09); opacity: 0.7; }
+    100% { transform: translate(38px, 40px) scale(1); opacity: 0.9; }
+  }
+
+  @keyframes core-3d-transform {
+    0% { transform: translate(25px, 27px) scale(1); }
+    14.28% { transform: translate(26px, 26px) scale(1.19); }
+    28.57% { transform: translate(25px, 25px) scale(1); }
+    42.85% { transform: translate(24px, 26px) scale(0.88); }
+    57.14% { transform: translate(25px, 27px) scale(1); }
+    71.42% { transform: translate(26px, 28px) scale(1.13); }
+    85.71% { transform: translate(25px, 28px) scale(1.06); }
+    100% { transform: translate(25px, 27px) scale(1); }
+  }
+}
+
+/* ========================================
+   VARIÁVEIS DE CORES
+   ======================================== */
+
+:root {
+  /* Cores do tema claro - mais vibrantes */
+  --bg-page-light: #f8fafc;
+  --card-bg-light: rgba(255, 255, 255, 0.85);
+  --card-border-light: rgba(0, 0, 0, 0.08);
+  --text-main-light: #0f172a;
+  --text-sub-light: #64748b;
+  --shadow-light: 0 20px 40px -10px rgba(0,0,0,0.08);
+  
+  /* Cores do tema escuro - originais */
+  --bg-page-dark: #020617;
+  --card-bg-dark: rgba(15, 23, 42, 0.6);
+  --card-border-dark: rgba(255, 255, 255, 0.1);
+  --text-main-dark: #ffffff;
+  --text-sub-dark: #94a3b8;
+  --shadow-dark: 0 30px 60px -15px rgba(0,0,0,0.9), inset 0 1px 0 rgba(255,255,255,0.05);
+}
+
+/* ========================================
+   CONFIGURAÇÕES DE TEMA
+   ======================================== */
+
+/* Tema claro */
+:root:not([data-theme="dark"]) {
+  --bg-page: var(--bg-page-light);
+  --card-bg: var(--card-bg-light);
+  --card-border: var(--card-border-light);
+  --text-main: var(--text-main-light);
+  --text-sub: var(--text-sub-light);
+  --shadow: var(--shadow-light);
+}
+
+/* Tema escuro */
+[data-theme="dark"] {
+  --bg-page: var(--bg-page-dark);
+  --card-bg: var(--card-bg-dark);
+  --card-border: var(--card-border-dark);
+  --text-main: var(--text-main-dark);
+  --text-sub: var(--text-sub-dark);
+  --shadow: var(--shadow-dark);
+}
+
+/* ========================================
+   RESPONSIVIDADE COMPLETA
+   ======================================== */
+
+/* ===== RESPONSIVIDADE MELHORADA ===== */
+@media (max-width: 768px) {
+  /* Ajustes gerais para mobile */
+  #root {
+    padding: 1rem;
+  }
+
+  /* Ajustes para o canvas neural */
+  .neural-canvas-mobile {
+    opacity: 0.3; /* Reduz opacidade no mobile para não interferir na leitura */
+  }
+
+  /* Layout responsivo do logo */
+  .logo-container-responsive {
+    flex-direction: column !important;
+    gap: 1rem !important;
+    padding: 1.5rem !important;
+    margin: 1rem !important;
+    max-width: 20rem !important;
+    text-align: center !important;
+  }
+
+  /* Cubo menor no mobile */
+  .cube-mobile {
+    width: 70px !important;
+    height: 85px !important;
+  }
+
+  /* Texto responsivo */
+  .text-responsive-main {
+    font-size: 3rem !important;
+    line-height: 1 !important;
+  }
+
+  .text-responsive-sub {
+    font-size: 0.625rem !important;
+    letter-spacing: 0.125rem !important;
+    margin-top: 0.5rem !important;
+  }
+
+  /* Botão de tema compacto */
+  .theme-button-mobile {
+    top: 1rem !important;
+    right: 1rem !important;
+    padding: 0.5rem 0.75rem !important;
+    font-size: 0.75rem !important;
+  }
+
+  /* Esconde elementos complexos no mobile */
+  .desktop-only {
+    display: none !important;
+  }
+
+  /* Otimizações de animação para mobile */
+  svg circle {
+    animation-duration: 8s !important; /* Animações mais lentas */
+  }
+  
+  .animate-floating {
+    animation-duration: 8s !important;
+  }
+
+  /* Simplifica efeitos visuais */
+  .backdrop-blur-2xl {
+    backdrop-filter: blur(8px) !important;
+  }
+  
+  .drop-shadow-\[0_4px_20px_rgba\(59\,130\,246\,0\.25\)\] {
+    filter: drop-shadow(0 2px 10px rgba(59,130,246,0.15)) !important;
+  }
+  
+  /* Simplifica sombras */
+  .shadow-\[0_20px_40px_-10px_rgba\(0\,0\,0\,0\.08\)\] {
+    box-shadow: 0 4px 12px -2px rgba(0,0,0,0.1) !important;
+  }
+
+  /* Canvas responsivo */
+  .canvas-responsive {
+    width: 100% !important;
+    height: 100% !important;
+  }
+}
+
+@media (max-width: 480px) {
+  /* Ajustes para telas muito pequenas */
+  .logo-container-mobile {
+    padding: 1rem !important;
+    margin: 0.5rem !important;
+    max-width: 18rem !important;
+  }
+
+  .text-responsive-main {
+    font-size: 2.5rem !important;
+  }
+
+  .text-responsive-sub {
+    font-size: 0.5rem !important;
+  }
+
+  /* Reduz ainda mais as animações */
+  svg * {
+    animation-duration: 10s !important;
+  }
+
+  /* Botão ainda menor */
+  .theme-button-mobile {
+    padding: 0.375rem 0.5rem !important;
+    font-size: 0.625rem !important;
+  }
+}
+
+/* ===== CLASSES UTILITÁRIAS RESPONSIVAS ===== */
+.container-responsive {
+  width: 100%;
+  max-width: 100%;
+  padding: 1rem;
+}
+
+@media (min-width: 768px) {
+  .container-responsive {
+    max-width: none;
+    padding: 0;
+  }
+
+  /* Mostra elementos desktop */
+  .desktop-only {
+    display: block !important;
+  }
+
+  /* Layout desktop do logo */
+  .logo-container-responsive {
+    flex-direction: row !important;
+    gap: 2rem !important;
+    padding: 4rem !important;
+    margin: 0 !important;
+    max-width: none !important;
+    text-align: left !important;
+  }
+
+  /* Canvas desktop */
+  .canvas-responsive {
+    width: 40% !important;
+    height: 100% !important;
+  }
+}
+
+/* ========================================
+   OTIMIZAÇÕES DE PERFORMANCE
+   ======================================== */
+
+/* Força aceleração por hardware para animações suaves */
+.cube-particles {
+  will-change: transform, opacity;
+  backface-visibility: hidden;
+  perspective: 1000px;
+}
+
+/* Reduz animações para dispositivos com preferência de movimento reduzido */
+@media (prefers-reduced-motion: reduce) {
+  .orbit-xy-css,
+  .orbit-z-css,
+  .core-3d-css {
+    animation-duration: 10s !important;
+  }
+  
+  /* Pausa animações SVG para acessibilidade */
+  svg circle[class*="animate-"],
+  svg line[class*="animate-"] {
+    animation-play-state: paused !important;
+  }
+}
+
+/* Otimizações para mobile */
+@media (max-width: 768px) {
+  .cube-particles {
+    animation-duration: 1.5s !important;
+  }
+  
+  /* Reduz complexidade das animações em telas pequenas */
+  svg circle {
+    animation-duration: 6s !important;
+  }
+}
+
+/* ========================================
+   CLASSES DE UTILIDADE EXTRAS
+   ======================================== */
+
+/* Classe para elementos que precisam de hardware acceleration */
+.gpu-accelerated {
+  transform: translateZ(0);
+  will-change: transform;
+}
+
+/* Classe para suavizar animações */
+.smooth-animation {
+  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* Classe para pausar animações quando necessário */
+.pause-animations * {
+  animation-play-state: paused !important;
+}
+
+/* ===== CLASSES ESPECÍFICAS PARA RESPONSIVIDADE ===== */
+
+/* Utilitários de visibilidade responsiva */
+.mobile-only {
+  display: block;
+}
+
+.desktop-only {
+  display: none;
+}
+
+@media (min-width: 768px) {
+  .mobile-only {
+    display: none;
+  }
+  
+  .desktop-only {
+    display: block;
+  }
+}
+
+/* Utilitários de layout responsivo */
+.flex-responsive {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+}
+
+@media (min-width: 768px) {
+  .flex-responsive {
+    flex-direction: row;
+    text-align: left;
+  }
+}
+
+/* Utilitários de espaçamento responsivo */
+.gap-responsive {
+  gap: 1rem;
+}
+
+@media (min-width: 768px) {
+  .gap-responsive {
+    gap: 2rem;
+  }
+}
+
+.padding-responsive {
+  padding: 1.5rem;
+}
+
+@media (min-width: 768px) {
+  .padding-responsive {
+    padding: 4rem;
+  }
+}
+
+/* Adicione essas animações ao seu CSS existente */
+
+/* Animação de gradiente */
+@keyframes gradient-x {
+  0%, 100% {
+    background-size: 200% 200%;
+    background-position: left center;
+  }
+  50% {
+    background-size: 200% 200%;
+    background-position: right center
+  }}
+
+  /* Esconder scrollbar mas manter funcionalidade */
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}

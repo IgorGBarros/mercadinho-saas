@@ -1,0 +1,130 @@
+/* src/styles/api.module.css */
+
+/* Container principal */
+.apiContainer {
+  min-height: 100vh;
+  background: var(--background);
+}
+
+/* Hero Section */
+.heroSection {
+  position: relative;
+  overflow: hidden;
+  padding: 5rem 1rem;
+  background: linear-gradient(to bottom, var(--primary)/0.05, var(--background));
+}
+
+.heroSection h1 {
+  font-size: clamp(2rem, 5vw, 3.5rem);
+  line-height: 1.1;
+  font-weight: 700;
+}
+
+.heroSection .highlight {
+  color: var(--primary);
+}
+
+/* Cards de Features */
+.featureCard {
+  transition: transform 0.2s, box-shadow 0.2s;
+}
+
+.featureCard:hover {
+  transform: translateY(-2px);
+  box-shadow: var(--shadow-lg);
+}
+
+/* Código Exemplo */
+.codeExample {
+  position: relative;
+}
+
+.codeExample pre {
+  font-family: var(--font-mono);
+  font-size: 0.875rem;
+  line-height: 1.5;
+  white-space: pre;
+  overflow-x: auto;
+}
+
+.codeExample .copyButton {
+  position: absolute;
+  top: 0.5rem;
+  right: 0.5rem;
+  opacity: 0;
+  transition: opacity 0.2s;
+}
+
+.codeExample:hover .copyButton {
+  opacity: 1;
+}
+
+/* Pricing Cards */
+.pricingCard {
+  position: relative;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.pricingCard.popular {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 1px var(--primary), var(--shadow-lg);
+}
+
+.pricingCard .popularBadge {
+  position: absolute;
+  top: -0.75rem;
+  left: 50%;
+  transform: translateX(-50%);
+}
+
+/* Swagger Embed */
+.swaggerContainer :global(.swagger-ui) {
+  font-family: var(--font-sans) !important;
+}
+
+.swaggerContainer :global(.swagger-ui .topbar) {
+  display: none;
+}
+
+.swaggerContainer :global(.swagger-ui .info) {
+  margin-bottom: 2rem;
+}
+
+/* Dashboard */
+.dashboardCard {
+  transition: border-color 0.2s;
+}
+
+.dashboardCard:hover {
+  border-color: var(--primary);
+}
+
+/* Responsivo */
+@media (max-width: 768px) {
+  .heroSection {
+    padding: 3rem 1rem;
+  }
+  
+  .pricingGrid {
+    grid-template-columns: 1fr !important;
+  }
+}
+
+/* Animações */
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(10px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.3s ease-out;
+}
+
+/* Utilitários */
+.text-balance {
+  text-wrap: balance;
+}
+
+.max-w-prose {
+  max-width: 65ch;
+}

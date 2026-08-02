@@ -1,0 +1,33 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+  test-backend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.12'
+      - name: Install Deps
+        run: pip install -r backend/requirements.txt
+      - name: Run Tests
+        env: 
+          DATABASE_URL: sqlite:///db.sqlite3 # Usa banco local pra teste rápido
+          PYTHONPATH: backend/core
+        run: |
+          cd backend/core
+          python manage.py test
+
+  deploy:
+    needs: test-backend # Só roda se os testes passarem
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Trigger Render Deploy
+        # Usa um webhook do Render (Deploy Hook) para avisar que pode atualizar
+        run: curl ${{ secrets.RENDER_DEPLOY_HOOK }}

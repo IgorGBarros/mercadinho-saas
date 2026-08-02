@@ -1,0 +1,223 @@
+/* ✅ @import PRIMEIRO (antes de tudo) */
+@import url('https://fonts.googleapis.com/css2?family=DM+Sans:ital,opsz,wght@0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&display=swap');
+
+/* ✅ Tailwind DEPOIS */
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --color-brand: #871745;
+    --color-brand-hover: #A91B60;
+    --color-brand-soft: #FDF2F7;
+    --color-brand-peach: #FDF2F7;
+    --color-brand-lavender: #D8BFD8;
+    --color-brand-rose: #B76E79;
+    /* A paleta do produto é VINHO. "success" usa a cor da marca de
+       propósito: não existe verde no sistema. */
+    --color-success: #871745;
+    --color-text-main: #2D292E;
+    --background: 335 15% 97%;
+    --foreground: 335 30% 10%;
+
+
+    --card: 0 0% 100%;
+    --card-foreground: 335 30% 10%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 335 30% 10%;
+
+    /* ⚠️ Era 152 55% 28% (verde). Como o <Button> do shadcn usa bg-primary,
+       os botões dele saíam VERDES enquanto os botões manuais usavam bg-brand
+       (vinho) — dois padrões de cor na mesma tela. Agora primary = marca. */
+    --primary: 335 71% 31%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 335 20% 92%;
+    --secondary-foreground: 335 30% 15%;
+
+    --muted: 335 12% 93%;
+    --muted-foreground: 335 10% 45%;
+
+    --accent: 38 80% 55%;
+    --accent-foreground: 38 90% 15%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 335 15% 88%;
+    --input: 335 15% 88%;
+    --ring: 335 55% 28%;
+
+    --radius: 0.75rem;
+
+    --chat-user: 335 55% 28%;
+    --chat-user-foreground: 0 0% 100%;
+    --chat-assistant: 335 15% 95%;
+    --chat-assistant-foreground: 335 30% 10%;
+    --chat-gradient: linear-gradient(135deg, hsl(152, 55%, 28%), hsl(160, 45%, 38%));
+
+    --sidebar-background: 0 0% 98%;
+    --sidebar-foreground: 240 5.3% 26.1%;
+    --sidebar-primary: 335 55% 28%;
+    --sidebar-primary-foreground: 0 0% 98%;
+    --sidebar-accent: 335 20% 92%;
+    --sidebar-accent-foreground: 335 30% 15%;
+    --sidebar-border: 335 15% 88%;
+    --sidebar-ring: 335 55% 28%;
+
+    font-family: 'DM Sans', system-ui, sans-serif;
+  }
+
+  .dark {
+    /* ══════════════════════════════════════════
+       PALETA DA MARCA NO TEMA ESCURO
+       ══════════════════════════════════════════
+       ⚠️ Estas variáveis existiam APENAS no tema claro. Como
+       --color-brand-soft e --color-brand-peach são #FDF2F7 (quase branco) e
+       aparecem 93 vezes no app (fundo das bolhas do chat, cards, bordas),
+       no tema escuro tudo isso continuava BRANCO — foi o que apareceu no
+       chat da Amorinha e nos cards do início.
+
+       Agora cada uma tem a versão escura correspondente, mantendo o mesmo
+       papel: "soft" e "peach" são superfícies sutis, "lavender" e "rose" são
+       destaques secundários. */
+    --color-brand: #A91B60;          /* mais claro: precisa de contraste no escuro */
+    --color-brand-hover: #C42472;
+    --color-brand-soft: #2A1720;     /* superfície sutil (era quase branca) */
+    --color-brand-peach: #2A1720;
+    --color-brand-lavender: #6B4A63;
+    --color-brand-rose: #C48A93;
+    --color-success: #A91B60;
+    --color-text-main: #F2E8EC;
+    --background: 335 20% 6%;
+    --foreground: 335 15% 95%;
+
+    --card: 335 20% 9%;
+    --card-foreground: 335 15% 95%;
+
+    --popover: 335 20% 9%;
+    --popover-foreground: 335 15% 95%;
+
+    --primary: 335 65% 45%;  /* marca, versão mais clara para o tema escuro */
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 335 15% 15%;
+    --secondary-foreground: 335 15% 90%;
+
+    --muted: 335 15% 15%;
+    --muted-foreground: 335 10% 55%;
+
+    --accent: 38 70% 50%;
+    --accent-foreground: 38 90% 90%;
+
+    --destructive: 0 62.8% 30.6%;
+    --destructive-foreground: 0 0% 100%;
+
+    --border: 335 15% 18%;
+    --input: 335 15% 18%;
+    --ring: 335 50% 45%;
+
+    --chat-user: 335 50% 40%;
+    --chat-user-foreground: 0 0% 100%;
+    --chat-assistant: 335 15% 12%;
+    --chat-assistant-foreground: 335 15% 90%;
+
+    --sidebar-background: 335 20% 8%;
+    --sidebar-foreground: 335 15% 90%;
+    --sidebar-primary: 335 50% 45%;
+    --sidebar-primary-foreground: 0 0% 100%;
+    --sidebar-accent: 335 15% 15%;
+    --sidebar-accent-foreground: 335 15% 90%;
+    --sidebar-border: 335 15% 18%;
+    --sidebar-ring: 335 50% 45%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+    font-family: 'DM Sans', system-ui, sans-serif;
+  }
+
+  h1, h2, h3, h4, h5, h6 {
+    font-family: 'Space Grotesk', system-ui, sans-serif;
+  }
+}
+
+/* ══════════════════════════════════════════
+   ESCOPO DE TEMA CLARO FORÇADO
+   ══════════════════════════════════════════
+   Algumas telas ficam melhores sempre claras, independentemente da
+   preferência do usuário:
+
+   • Painel administrativo — é ferramenta interna, com muita tabela densa;
+     não vale manter duas versões de cada estilo.
+   • Relatórios — os valores em destaque (Entrou / Saiu / Lucro) perdem
+     legibilidade em vinho sobre fundo escuro. Como a paleta não tem verde,
+     sobra pouca margem de contraste no escuro.
+
+   Uso: <div className="tema-claro"> ... </div>
+   As variáveis abaixo repetem as do :root e, por serem declaradas em um
+   elemento mais interno, vencem as do .dark herdadas do <html>. */
+.tema-claro {
+  --color-brand: #871745;
+  --color-brand-hover: #A91B60;
+  --color-brand-soft: #FDF2F7;
+  --color-brand-peach: #FDF2F7;
+  --color-brand-lavender: #D8BFD8;
+  --color-brand-rose: #B76E79;
+  --color-success: #871745;
+  --color-text-main: #2D292E;
+  --background: 335 15% 97%;
+  --foreground: 335 30% 10%;
+  --card: 0 0% 100%;
+  --card-foreground: 335 30% 10%;
+  --popover: 0 0% 100%;
+  --popover-foreground: 335 30% 10%;
+  --primary: 335 71% 31%;
+  --primary-foreground: 0 0% 100%;
+  --secondary: 335 20% 92%;
+  --secondary-foreground: 335 30% 15%;
+  --muted: 335 12% 93%;
+  --muted-foreground: 335 10% 45%;
+  --accent: 38 80% 55%;
+  --accent-foreground: 38 90% 15%;
+  --destructive: 0 72% 51%;
+  --destructive-foreground: 0 0% 100%;
+  --border: 335 15% 88%;
+  --input: 335 15% 88%;
+  --ring: 335 55% 28%;
+  --radius: 0.75rem;
+  --chat-user: 335 55% 28%;
+  --chat-user-foreground: 0 0% 100%;
+  --chat-assistant: 335 15% 95%;
+  --chat-assistant-foreground: 335 30% 10%;
+  --chat-gradient: linear-gradient(135deg, hsl(152, 55%, 28%), hsl(160, 45%, 38%));
+  --sidebar-background: 0 0% 98%;
+  --sidebar-foreground: 240 5.3% 26.1%;
+  --sidebar-primary: 335 55% 28%;
+  --sidebar-primary-foreground: 0 0% 98%;
+  --sidebar-accent: 335 20% 92%;
+  --sidebar-accent-foreground: 335 30% 15%;
+  --sidebar-border: 335 15% 88%;
+  --sidebar-ring: 335 55% 28%;
+  color-scheme: light;
+  background-color: hsl(var(--background));
+  color: hsl(var(--foreground));
+}
+
+/* Opções de <select> no tema escuro.
+   O menu suspenso nativo é desenhado pelo sistema operacional: sem estas
+   regras ele herda o texto claro do tema e desenha sobre fundo branco,
+   deixando as opções quase invisíveis (foi o que aconteceu no filtro de
+   período). */
+.dark select option {
+  background-color: #2A1720;
+  color: #F2E8EC;
+}
