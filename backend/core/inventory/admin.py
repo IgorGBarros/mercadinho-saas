@@ -1,5 +1,5 @@
 from django.contrib import admin
-from .models import Product, Store, InventoryItem, InventoryBatch, Sale, SaleItem, CrawlerLog
+from .models import Product, Store, InventoryItem, InventoryBatch, Sale, SaleItem
 
 # Configuração para facilitar visualização
 class InventoryBatchInline(admin.TabularInline):
@@ -22,4 +22,3 @@ admin.site.register(Product)
 admin.site.register(Store)
 admin.site.register(InventoryItem, InventoryItemAdmin)
 admin.site.register(Sale, SaleAdmin)
-admin.site.register(CrawlerLog)

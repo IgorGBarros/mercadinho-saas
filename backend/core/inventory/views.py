@@ -52,7 +52,7 @@ from .serializers import (
     PromotionSerializer,
 )
 
-from .scraper import search_google_shopping
+
 from .consent_utils import has_consent_for_purpose as _has_consent_for_purpose
 from decimal import Decimal, InvalidOperation
 from django.db.models.functions import Abs  # usado no fluxo de caixa MEI
@@ -292,7 +292,6 @@ from .serializers import (
     ProductSerializer, InventoryItemSerializer, 
     StockEntrySerializer, SaleSerializer, StockTransactionSerializer
 )
-from .scraper import search_google_shopping
 
 # ==========================================
 # 0. HELPERS & MIXINS MULTI-TENANT
@@ -1226,7 +1225,7 @@ def lookup_product(request):
     if len(query) > 5:
         print(f"   ↳ Não achou EAN localmente. Iniciando Scraper para {query}...")
         
-        online_data = search_google_shopping(query)
+        online_data = None
         
         if online_data:
             sku_found = online_data.get('natura_sku')

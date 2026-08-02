@@ -141,9 +141,9 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt.token_blacklist',
     'django_filters',
     'inventory',
-    'ai',
+    
     'apps.payments',
-    'apps.developers',
+   
 ]
 
 # ✅ ORDEM CRÍTICA DO MIDDLEWARE

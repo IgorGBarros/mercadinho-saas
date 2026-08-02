@@ -27,12 +27,7 @@ import Auth from "./pages/Auth";
 import Storefront from "./pages/Storefront";
 import NotFound from "./pages/NotFound";
 
-// Pages - API / Dev
-import ApiLanding from "./pages/ApiLanding";
-import ApiDevAuth from "./pages/ApiDevAuth";
-import ApiDocs from "./pages/ApiDocs";
-import ApiPricing from "./pages/ApiPricing";
-import ApiDashboard from "./pages/ApiDashboard";
+
 
 // Pages - Protected (App Core)
 import Index from "./pages/Index";
@@ -163,18 +158,7 @@ const App = () => {
                       <Route path="/vitrine/:slug" element={<Storefront />} />
                       <Route path="/vitrine" element={<Storefront />} />
 
-                      {/* Rotas de API / Desenvolvedores */}
-                      <Route path="/api" element={<ApiLanding />} />
-                      <Route path="/api/login" element={<ApiDevAuth />} />
-                      <Route path="/api/docs" element={<ApiDocs />} />
-                      <Route path="/api/pricing" element={<ApiPricing />} />
-                      {/* ⚠️ O sandbox saiu daqui — agora é uma aba dentro do
-                          painel autenticado (ApiDashboard), com chamadas
-                          reais em vez do mockResponse fixo de antes. Link
-                          antigo redireciona em vez de dar 404. */}
-                      <Route path="/api/sandbox" element={<Navigate to="/api/dashboard" replace />} />
-                      <Route path="/api/dashboard" element={<ApiDashboard />} />
-
+s
                       {/* ==========================================
                           ROTAS PROTEGIDAS (Requer autenticação)
                           ========================================== */}

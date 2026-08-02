@@ -906,14 +906,7 @@ class ApiKey(models.Model):
     # chave emitida pra um desenvolvedor de verdade, não uma loja disfarçada
     # de "cliente de API" — antes o admin-panel simulava chaves a partir de
     # lojas com vitrine ativa, sem nenhuma chave real ter sido emitida.
-    developer = models.ForeignKey(
-        'developers.DeveloperAccount',
-        on_delete=models.CASCADE,
-        related_name='api_keys',
-        null=True,
-        blank=True,
-        help_text="Desenvolvedor dono da chave (produto de API comercial)"
-    )
+   
     
     plan = models.CharField(max_length=20, choices=PLAN_CHOICES, default='starter')
     scopes = models.JSONField(default=list, help_text="Lista de scopes permitidos")
@@ -1101,12 +1094,7 @@ class ProcessedPaymentEvent(models.Model):
     )
     # 💰 Fase 4 — mesma tabela de idempotência, agora também usada pelas
     # assinaturas de API dos desenvolvedores. Exatamente um dos dois
-    # (store OU developer) é preenchido por evento, nunca os dois.
-    developer = models.ForeignKey(
-        'developers.DeveloperAccount', on_delete=models.CASCADE, related_name='processed_payments',
-        null=True, blank=True,
-        help_text="Preenchido só pra pagamento de assinatura de API (desenvolvedor)."
-    )
+   
     event = models.CharField(max_length=50, blank=True)
     days_granted = models.IntegerField(default=0)
     processed_at = models.DateTimeField(auto_now_add=True)
