@@ -15,14 +15,11 @@ Isso também tornava fácil "perder" rotas ao sobrescrever um dos arquivos.
 Agora a regra é simples:
   • rota de estoque, venda, perfil, relatórios → inventory/urls.py
   • rota do painel admin                        → inventory/admin_urls.py
-  • rota do assistente                          → ai/urls.py
   • rota de pagamento                           → apps/payments/urls.py
-  • rota de desenvolvedor (produto de API)       → apps/developers/urls.py
-  • rota da API comercial (/api/v1/...)         → inventory/api_comercial_urls.py
 
 Se precisar de uma rota nova, ela vai no arquivo do app — nunca aqui.
 
-⚠️ As 6 linhas de inclusão abaixo são críticas: sem elas o sistema responde 404
+⚠️ As 3 linhas de inclusão abaixo são críticas: sem elas o sistema responde 404
 em tudo. Antes de qualquer push:
     grep -c "path('' , include" ... ou simplesmente confira que as 5
     linhas marcadas abaixo continuam presentes.
@@ -35,10 +32,9 @@ urlpatterns = [
     # inventory/admin_urls.py. Expor o /admin/ do Django acrescentaria uma
     # tela de login pública sem necessidade.
 
-    # ⚠️ AS 6 LINHAS CRÍTICAS ⚠️
+    # ⚠️ AS 3 LINHAS CRÍTICAS ⚠️
     path('', include('inventory.urls')),                    # estoque, vendas, perfil, relatórios
     path('api/admin/', include('inventory.admin_urls')),    # painel administrativo
-    path('api/chat/', include('ai.urls')),                  # assistente Amorinha
     path('api/payments/', include('apps.payments.urls')),   # Asaas
 
 ]

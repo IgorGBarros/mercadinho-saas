@@ -140,6 +140,7 @@ INSTALLED_APPS = [
     # vazado continuava válido por 7 dias). Requer `manage.py migrate`.
     'rest_framework_simplejwt.token_blacklist',
     'django_filters',
+    'tenancy',
     'inventory',
     
     'apps.payments',

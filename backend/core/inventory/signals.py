@@ -44,34 +44,15 @@ def sync_admin_status_from_email(sender, instance, **kwargs):
         instance.is_superuser = False
 
 
-@receiver(post_save, sender=User)
-def create_store_for_new_user(sender, instance, created, **kwargs):
-    """
-    Toda vez que um User é criado no banco, esta função é disparada.
-    Garante que todo usuário tenha uma loja (Store) pronta para uso.
-    """
-    if created:
-        # Pega o primeiro nome ou parte do email para montar o link da vitrine
-        base_name = getattr(instance, 'first_name', '')
-        if not base_name:
-            base_name = instance.email.split('@')[0] if getattr(instance, 'email', None) else 'loja'
-        
-        # Garante que o slug (URL da vitrine) seja único usando um UUID curto
-        unique_slug = f"{base_name.lower().replace(' ', '-')}-{str(uuid.uuid4())[:6]}"
-        
-        # Cria a Loja vinculada ao novo Usuário
-        # 🎁 Trial: toda loja nova nasce com acesso completo por alguns dias,
-        # sem pedir cartão. A duração vem do settings (TRIAL_DAYS) para poder
-        # ser ajustada sem alterar código.
-        agora = timezone.now()
-        dias_trial = getattr(settings, 'TRIAL_DAYS', 14)
-
-        Store.objects.create(
-            owner=instance,
-            name=f"Espaço de {base_name.capitalize()}",
-            slug=unique_slug,
-            trial_started_at=agora,
-            trial_ends_at=agora + timedelta(days=dias_trial),
-            whatsapp="", # A consultora preenche depois
-            # storefront_enabled=False (Se você tiver esse campo no model, inicie desativado)
-        )
+# ⚠️ REMOVIDO: create_store_for_new_user
+#
+# Este signal criava uma Store a cada User salvo. Fazia sentido no modelo
+# antigo (auto-cadastro de consultora, um usuário = uma loja). No
+# mercadinho ele é nocivo por dois motivos:
+#
+#   1. Cada funcionário cadastrado viraria uma UNIDADE órfã. Como a
+#      cobrança é por unidade ativa, contratar um repositor aumentaria a
+#      fatura do cliente sem que ninguém entendesse por quê.
+#   2. Convite de funcionário deve criar um Membership, nunca uma unidade.
+#
+# Quem cria Operator + primeira Unit é o fluxo de onboarding do cliente.

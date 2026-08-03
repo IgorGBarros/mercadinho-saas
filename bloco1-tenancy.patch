@@ -1,0 +1,2640 @@
+diff --git a/.env.example b/.env.example
+new file mode 100644
+index 0000000..db480ec
+--- /dev/null
++++ b/.env.example
+@@ -0,0 +1,46 @@
++# .env.example — copie para backend/core/.env e ajuste.
++# ⚠️ O .env real NUNCA entra no Git. Confira o .gitignore.
++
++# ── Django ────────────────────────────────────────────────────────────
++SECRET_KEY=troque-isto-por-algo-longo-e-aleatorio
++DEBUG=True
++ALLOWED_HOSTS=localhost,127.0.0.1
++
++# ── Banco ─────────────────────────────────────────────────────────────
++# Local, via docker-compose.dev.yml:
++DATABASE_URL=postgres://mercadinho:dev-local-only@localhost:5432/mercadinho
++#
++# Supabase, quando for para produção. Django é um servidor PERSISTENTE, não
++# serverless — então a conexão direta (5432) é a que faz sentido, não o
++# pooler em transaction mode (6543), que existe para clientes efêmeros.
++#
++#   DATABASE_URL=postgresql://postgres:SENHA@db.SEU-PROJETO.supabase.co:5432/postgres
++#
++# Se por algum motivo você PRECISAR do pooler em transaction mode (6543),
++# duas coisas obrigatórias no settings, senão quebra em produção com erro
++# que não faz sentido nenhum:
++#
++#   DATABASES['default']['DISABLE_SERVER_SIDE_CURSORS'] = True
++#   DATABASES['default']['CONN_MAX_AGE'] = 0
++#
++# Server-side cursors não funcionam sob transaction pooling, e conexão
++# persistente não ajuda quando o pooler recicla a conexão a cada transação.
++
++# ── Cache ─────────────────────────────────────────────────────────────
++REDIS_URL=redis://localhost:6379/0
++
++# ── Pagamento ─────────────────────────────────────────────────────────
++ASAAS_API_KEY=
++ASAAS_ENV=sandbox
++
++# ── Fiscal (Etapa 4) ──────────────────────────────────────────────────
++# ⚠️ O certificado A1 (.pfx) e o CSC pertencem ao CNPJ do CLIENTE, não ao
++# seu. Ficam criptografados no banco (tenancy.Operator), nunca em arquivo
++# no repositório. Aqui vai só a chave do hub e a chave de criptografia.
++FOCUS_NFE_TOKEN=
++FOCUS_NFE_AMBIENTE=homologacao
++FISCAL_ENCRYPTION_KEY=
++
++# ── Admin ─────────────────────────────────────────────────────────────
++ADMIN_EMAILS=voce@exemplo.com
++TRIAL_DAYS=14
+diff --git a/backend/core/apps/payments/services/asaas_service.py b/backend/core/apps/payments/services/asaas_service.py
+index 51668ce..c9029eb 100644
+--- a/backend/core/apps/payments/services/asaas_service.py
++++ b/backend/core/apps/payments/services/asaas_service.py
+@@ -219,50 +219,23 @@ class AsaasService:
+     # ─── WEBHOOK PROCESSING ──────────────────────────────
+ 
+     def process_webhook(self, event: str, payload: dict) -> dict:
+-        # ⚠️ Fase 4: o MESMO endpoint de webhook agora processa dois
+-        # produtos diferentes — assinatura PRO de consultora e assinatura
+-        # de API de desenvolvedor. externalReference é o que desambigua:
+-        # 'dev_<uuid>' pra desenvolvedor, um ID de Store (inteiro) pro
+-        # caminho de sempre. O prefixo é explícito de propósito — não dá
+-        # pra confiar só no FORMATO (Store.id é inteiro, DeveloperAccount.id
+-        # é UUID) porque isso é implícito e frágil.
+-        #
+-        # PAYMENT_CONFIRMED/RECEIVED/OVERDUE trazem o externalReference em
+-        # payload['payment']; SUBSCRIPTION_CANCELED traz em
+-        # payload['subscription'] — formatos diferentes do Asaas pro mesmo
+-        # conceito, então checa os dois.
+-        external_ref = str(
+-            (payload.get('payment') or {}).get('externalReference')
+-            or (payload.get('subscription') or {}).get('externalReference')
+-            or ''
+-        )
+-        eh_desenvolvedor = external_ref.startswith('dev_')
+-
+-        if eh_desenvolvedor:
+-            handlers = {
+-                'PAYMENT_CONFIRMED': self._on_developer_payment_received,
+-                'PAYMENT_RECEIVED': self._on_developer_payment_received,
+-                'PAYMENT_OVERDUE': self._on_developer_payment_overdue,
+-                'SUBSCRIPTION_CANCELED': self._on_developer_subscription_canceled,
+-            }
+-        else:
+-            handlers = {
+-                # ⚠️ PAYMENT_CONFIRMED é essencial: no cartão de crédito o Asaas
+-                # só envia PAYMENT_RECEIVED ~32 dias depois (quando o dinheiro é
+-                # liberado). Tratando apenas RECEIVED, quem pagasse no cartão
+-                # esperaria um mês pelo PRO. CONFIRMED significa "pagamento
+-                # efetuado" — é nele que liberamos o acesso.
+-                'PAYMENT_CONFIRMED': self._on_payment_received,
+-                'PAYMENT_RECEIVED': self._on_payment_received,
+-                'PAYMENT_OVERDUE': self._on_payment_overdue,
+-                'SUBSCRIPTION_CANCELED': self._on_subscription_canceled,
+-            }
++        handlers = {
++            # ⚠️ PAYMENT_CONFIRMED é essencial: no cartão de crédito o Asaas
++            # só envia PAYMENT_RECEIVED ~32 dias depois (quando o dinheiro é
++            # liberado). Tratando apenas RECEIVED, quem pagasse no cartão
++            # esperaria um mês pelo acesso. CONFIRMED significa "pagamento
++            # efetuado" — é nele que liberamos.
++            'PAYMENT_CONFIRMED': self._on_payment_received,
++            'PAYMENT_RECEIVED': self._on_payment_received,
++            'PAYMENT_OVERDUE': self._on_payment_overdue,
++            'SUBSCRIPTION_CANCELED': self._on_subscription_canceled,
++        }
+ 
+         handler = handlers.get(event)
+         if not handler:
+             return {'status': 'ignored', 'event': event}
+ 
+-        logger.info(f"[ASAAS WEBHOOK] Processando: {event} ({'desenvolvedor' if eh_desenvolvedor else 'consultora'})")
++        logger.info(f"[ASAAS WEBHOOK] Processando: {event}")
+         return handler(payload, event=event)
+ 
+     def _find_store_from_payload(self, payload: dict):
+@@ -408,179 +381,5 @@ class AsaasService:
+         except Store.DoesNotExist:
+             return {'status': 'error', 'message': 'Store not found'}
+ 
+-    # ─────────────────────────────────────────────────────────────
+-    # 💰 ASSINATURA DE API (Fase 4) — mesmo Asaas, produto diferente
+-    # ─────────────────────────────────────────────────────────────
+-
+-    def create_developer_payment_link(self, developer, plan_type: str, billing_cycle: str = 'monthly') -> dict:
+-        """
+-        Cria o link de checkout pra um desenvolvedor assinar um plano de
+-        API pago. Mesmo padrão do create_payment_link (consultora) — sem
+-        criar "customer", sem coletar CPF/CNPJ aqui.
+-        """
+-        from apps.developers.models import ApiPlanConfig
+-
+-        plano = ApiPlanConfig.objects.filter(plan_type=plan_type, is_visible=True).first()
+-        if not plano:
+-            raise AsaasAPIError(f"Plano de API '{plan_type}' não encontrado ou não disponível.")
+-
+-        value = float(plano.yearly_price if billing_cycle == 'yearly' else plano.monthly_price)
+-        if value <= 0:
+-            raise AsaasAPIError(f"Plano '{plan_type}' ainda não tem preço configurado.")
+-
+-        cycle_label = "Mensal" if billing_cycle == "monthly" else "Anual"
+-        link_data = {
+-            'name': f'Minha Amora API — {plano.display_name} ({cycle_label})',
+-            'description': f'Assinatura de API para {developer.email}',
+-            'endDate': (timezone.now() + timedelta(days=7)).strftime('%Y-%m-%d'),
+-            'value': value,
+-            'billingType': 'UNDEFINED',
+-            'chargeType': 'RECURRENT',
+-            'dueDateLimitDays': 5,
+-            'subscriptionCycle': 'MONTHLY' if billing_cycle == 'monthly' else 'YEARLY',
+-            'notificationEnabled': True,
+-            # ⚠️ O prefixo 'dev_' é o que faz o webhook desviar pro caminho
+-            # de desenvolvedor em vez de tentar achar uma Store com este ID
+-            # (que nunca existiria, já que developer.id é UUID).
+-            'externalReference': f'dev_{developer.id}',
+-        }
+-
+-        result = self._request('POST', 'paymentLinks', data=link_data)
+-
+-        link_id = result.get('id')
+-        if link_id:
+-            from apps.developers.models import ApiSubscription
+-            sub, _ = ApiSubscription.objects.get_or_create(developer=developer, defaults={'plan': plano})
+-            sub.payment_external_id = link_id
+-            sub.save(update_fields=['payment_external_id'])
+-
+-        logger.info(f"[ASAAS] Payment link (API): {result.get('url')}")
+-        return result
+-
+-    def _match_developer_plan(self, paid_value):
+-        """
+-        Descobre qual ApiPlanConfig foi pago comparando o valor recebido
+-        com mensal/anual de cada plano configurado — mesma lógica de
+-        _days_for_payment, mas escolhendo o PLANO (não só mensal/anual do
+-        único plano PRO que a consultora tem).
+-        """
+-        from apps.developers.models import ApiPlanConfig
+-
+-        if paid_value is None:
+-            return None, 30
+-        valor = float(paid_value)
+-
+-        melhor_plano, melhor_dias, menor_diff = None, 30, None
+-        for plano in ApiPlanConfig.objects.all():
+-            for preco, dias in [(float(plano.monthly_price), 30), (float(plano.yearly_price), 365)]:
+-                if preco <= 0:
+-                    continue
+-                diff = abs(valor - preco)
+-                if menor_diff is None or diff < menor_diff:
+-                    menor_diff, melhor_plano, melhor_dias = diff, plano, dias
+-
+-        # Tolerância pequena: só casa se o valor bateu razoavelmente perto
+-        # de algum preço configurado, não só "o mais próximo entre todos"
+-        # mesmo que a diferença seja enorme (evita casar um valor
+-        # aleatório com o plano mais barato só por ser o "menos errado").
+-        if melhor_plano and menor_diff is not None and menor_diff < 5:
+-            return melhor_plano, melhor_dias
+-        return None, 30
+-
+-    def _on_developer_payment_received(self, payload: dict, event: str = '') -> dict:
+-        from apps.developers.models import DeveloperAccount, ApiSubscription
+-        from inventory.models import ProcessedPaymentEvent
+-
+-        payment = payload.get('payment', {}) or {}
+-        external_ref = str(payment.get('externalReference') or '')
+-        dev_id = external_ref[len('dev_'):]
+-
+-        try:
+-            dev = DeveloperAccount.objects.get(id=dev_id)
+-        except (DeveloperAccount.DoesNotExist, ValueError, TypeError):
+-            logger.warning(f"[ASAAS WEBHOOK] Desenvolvedor não encontrado: {external_ref}")
+-            return {'status': 'error', 'message': 'Developer not found'}
+-
+-        # Mesma idempotência de sempre — reentrega ou CONFIRMED+RECEIVED da
+-        # mesma cobrança não processa duas vezes.
+-        payment_id = payment.get('id')
+-        if payment_id and ProcessedPaymentEvent.objects.filter(payment_id=payment_id).exists():
+-            logger.info(f"[ASAAS WEBHOOK] Cobrança {payment_id} já processada — ignorando")
+-            return {'status': 'duplicate', 'payment_id': payment_id, 'developer_id': str(dev.id)}
+-
+-        plano, dias = self._match_developer_plan(payment.get('value'))
+-        if not plano:
+-            logger.warning(f"[ASAAS WEBHOOK] Nenhum plano de API bate com o valor {payment.get('value')}")
+-            return {'status': 'error', 'message': 'No matching plan for paid value'}
+-
+-        now = timezone.now()
+-        sub, _ = ApiSubscription.objects.get_or_create(developer=dev, defaults={'plan': plano})
+-        current_expiry = sub.expires_at
+-        base = current_expiry if (current_expiry and current_expiry > now) else now
+-        sub.plan = plano
+-        if not sub.started_at:
+-            sub.started_at = now
+-        sub.expires_at = base + timedelta(days=dias)
+-        sub.save()
+-
+-        # ⚠️ Decisão de design (revisada com o Igor antes de implementar):
+-        # atualiza a chave EXISTENTE do desenvolvedor em vez de emitir uma
+-        # nova — ele não precisa trocar a chave numa integração já em
+-        # produção só porque virou assinante pago.
+-        chave = dev.api_keys.filter(is_active=True).order_by('-created_at').first()
+-        if chave:
+-            chave.plan = plano.plan_type
+-            chave.monthly_quota = plano.monthly_quota
+-            chave.rate_limit = plano.rate_limit
+-            chave.save(update_fields=['plan', 'monthly_quota', 'rate_limit'])
+-
+-        if payment_id:
+-            try:
+-                ProcessedPaymentEvent.objects.create(
+-                    payment_id=payment_id, developer=dev,
+-                    event=event or '', days_granted=dias,
+-                    value=payment.get('value'), billing_type=payment.get('billingType') or '',
+-                )
+-            except Exception as e:
+-                logger.warning(f"[ASAAS WEBHOOK] Não registrou idempotência de {payment_id}: {e}")
+-
+-        logger.info(f"[ASAAS WEBHOOK] Developer {dev.id} → {plano.plan_type} por {dias} dias (até {sub.expires_at})")
+-        return {'status': 'success', 'developer_id': str(dev.id), 'plan': plano.plan_type, 'days_granted': dias}
+-
+-    def _on_developer_payment_overdue(self, payload: dict, event: str = '') -> dict:
+-        payment = payload.get('payment', {}) or {}
+-        external_ref = str(payment.get('externalReference') or '')
+-        logger.warning(f"[ASAAS WEBHOOK] Pagamento de API atrasado: {external_ref}")
+-        return {'status': 'warning'}
+-
+-    def _on_developer_subscription_canceled(self, payload: dict, event: str = '') -> dict:
+-        from apps.developers.models import DeveloperAccount, ApiPlanConfig
+-
+-        subscription = payload.get('subscription', {}) or {}
+-        external_ref = str(subscription.get('externalReference') or '')
+-        dev_id = external_ref[len('dev_'):]
+-
+-        try:
+-            dev = DeveloperAccount.objects.get(id=dev_id)
+-        except (DeveloperAccount.DoesNotExist, ValueError, TypeError):
+-            return {'status': 'error', 'message': 'Developer not found'}
+-
+-        # Volta pro starter (gratuito) — mesma ideia de Store voltando pro
+-        # free quando a assinatura da consultora é cancelada.
+-        starter = ApiPlanConfig.objects.filter(plan_type='starter').first()
+-        if hasattr(dev, 'subscription'):
+-            dev.subscription.expires_at = timezone.now()
+-            dev.subscription.save(update_fields=['expires_at'])
+-
+-        chave = dev.api_keys.filter(is_active=True).order_by('-created_at').first()
+-        if chave and starter:
+-            chave.plan = 'starter'
+-            chave.monthly_quota = starter.monthly_quota
+-            chave.rate_limit = starter.rate_limit
+-            chave.save(update_fields=['plan', 'monthly_quota', 'rate_limit'])
+-
+-        logger.info(f"[ASAAS WEBHOOK] Developer {dev.id} → assinatura de API cancelada, voltou pro starter")
+-        return {'status': 'success', 'developer_id': str(dev.id)}
+-
+ 
+-asaas_service = AsaasService()
+\ No newline at end of file
++asaas_service = AsaasService()
+diff --git a/backend/core/core/settings.py b/backend/core/core/settings.py
+index a21900c..0847034 100644
+--- a/backend/core/core/settings.py
++++ b/backend/core/core/settings.py
+@@ -140,6 +140,7 @@ INSTALLED_APPS = [
+     # vazado continuava válido por 7 dias). Requer `manage.py migrate`.
+     'rest_framework_simplejwt.token_blacklist',
+     'django_filters',
++    'tenancy',
+     'inventory',
+     
+     'apps.payments',
+diff --git a/backend/core/core/urls.py b/backend/core/core/urls.py
+index 30435ce..49caa77 100644
+--- a/backend/core/core/urls.py
++++ b/backend/core/core/urls.py
+@@ -15,14 +15,11 @@ Isso também tornava fácil "perder" rotas ao sobrescrever um dos arquivos.
+ Agora a regra é simples:
+   • rota de estoque, venda, perfil, relatórios → inventory/urls.py
+   • rota do painel admin                        → inventory/admin_urls.py
+-  • rota do assistente                          → ai/urls.py
+   • rota de pagamento                           → apps/payments/urls.py
+-  • rota de desenvolvedor (produto de API)       → apps/developers/urls.py
+-  • rota da API comercial (/api/v1/...)         → inventory/api_comercial_urls.py
+ 
+ Se precisar de uma rota nova, ela vai no arquivo do app — nunca aqui.
+ 
+-⚠️ As 6 linhas de inclusão abaixo são críticas: sem elas o sistema responde 404
++⚠️ As 3 linhas de inclusão abaixo são críticas: sem elas o sistema responde 404
+ em tudo. Antes de qualquer push:
+     grep -c "path('' , include" ... ou simplesmente confira que as 5
+     linhas marcadas abaixo continuam presentes.
+@@ -35,10 +32,9 @@ urlpatterns = [
+     # inventory/admin_urls.py. Expor o /admin/ do Django acrescentaria uma
+     # tela de login pública sem necessidade.
+ 
+-    # ⚠️ AS 6 LINHAS CRÍTICAS ⚠️
++    # ⚠️ AS 3 LINHAS CRÍTICAS ⚠️
+     path('', include('inventory.urls')),                    # estoque, vendas, perfil, relatórios
+     path('api/admin/', include('inventory.admin_urls')),    # painel administrativo
+-    path('api/chat/', include('ai.urls')),                  # assistente Amorinha
+     path('api/payments/', include('apps.payments.urls')),   # Asaas
+ 
+ ]
+\ No newline at end of file
+diff --git a/backend/core/inventory/admin_urls.py b/backend/core/inventory/admin_urls.py
+index 2b00db3..54371f7 100644
+--- a/backend/core/inventory/admin_urls.py
++++ b/backend/core/inventory/admin_urls.py
+@@ -17,8 +17,6 @@ from .admin_views import (
+     admin_impersonate_user,
+     admin_toggle_block_user,
+     list_plan_configs,
+-    list_api_plan_configs,
+-    update_api_plan_config,
+     update_plan_config,
+     list_promotions,
+     update_system_config,
+@@ -28,8 +26,6 @@ from .admin_views import (
+     get_system_stats,
+     get_product_analytics,
+     get_store_behavior_analytics,
+-    get_ai_training_summary,
+-    monitor_api_usage,
+     update_plan,
+     update_subscription,
+ )
+@@ -43,14 +39,11 @@ urlpatterns = [
+     # Visão geral / configuração
+     path('stats/', get_system_stats, name='admin_system_stats'),
+     path('plan-configs/', list_plan_configs, name='admin_plan_configs'),
+-    path('api-plan-configs/', list_api_plan_configs, name='admin_api_plan_configs'),
+-    path('api-plan-configs/<str:plan_type>/', update_api_plan_config, name='admin_update_api_plan_config'),
+     path('plan-configs/<str:plan_type>/', update_plan_config, name='admin_update_plan_config'),
+     path('promotions/', list_promotions, name='admin_promotions'),
+     path('system-config/', update_system_config, name='admin_system_config'),
+     path('promotions/create/', create_promotion, name='admin_promotion_create'),
+     path('promotions/<uuid:promotion_id>/', promotion_detail, name='admin_promotion_detail'),
+-    path('api-monitor/', monitor_api_usage, name='admin_api_monitor'),
+ 
+     # Analytics (filtrado por consentimento LGPD — ver admin_views.py)
+     # 📊 Saúde de todas as consultoras (indicadores de gestão)
+@@ -61,5 +54,4 @@ urlpatterns = [
+     path('users/<int:user_id>/toggle-block/', admin_toggle_block_user, name='admin_toggle_block'),
+     path('analytics/products/', get_product_analytics, name='admin_product_analytics'),
+     path('analytics/behavior/', get_store_behavior_analytics, name='admin_behavior_analytics'),
+-    path('ai-training/summary/', get_ai_training_summary, name='admin_ai_training_summary'),
+ ]
+\ No newline at end of file
+diff --git a/backend/core/inventory/admin_views.py b/backend/core/inventory/admin_views.py
+index 7c01000..97804b2 100644
+--- a/backend/core/inventory/admin_views.py
++++ b/backend/core/inventory/admin_views.py
+@@ -642,118 +642,6 @@ def get_store_behavior_analytics(request):
+     })
+ 
+ 
+-# ─────────────────────────────────────────────────────────────
+-# DATASET DE TREINO DE IA (finalidade 'ai_training' — LGPD)
+-# ─────────────────────────────────────────────────────────────
+-
+-@api_view(['GET'])
+-@permission_classes([IsAdminUser])
+-def get_ai_training_summary(request):
+-    """
+-    GET /api/admin/ai-training/summary/ → Tamanho/cobertura do dataset
+-    disponível para treino de IA, sempre filtrado por consentimento
+-    ativo na finalidade 'ai_training' (distinta de 'ai_features').
+-    Ver inventory/ai_training_export.py para as regras completas.
+-    """
+-    from .ai_training_export import training_dataset_summary
+-    return Response(training_dataset_summary())
+-
+-
+-# ─────────────────────────────────────────────────────────────
+-# MONITORAMENTO INTERNO: API & WEBHOOKS (Futura Comercialização)
+-# ─────────────────────────────────────────────────────────────
+-# inventory/admin_views.py - SUBSTITUA a função monitor_api_usage por esta versão:
+-
+-@api_view(['GET'])
+-@permission_classes([IsAdminUser])
+-def monitor_api_usage(request):
+-    """
+-    GET /api/admin/api-monitor/ — dado real do produto de API.
+-
+-    ⚠️ REESCRITO DO ZERO: a versão anterior usava lojas com vitrine ativa
+-    como "proxy" de chave de API (gerando um prefixo falso a partir do
+-    slug — nenhuma chave real tinha sido emitida), e "revenue_api_mrr" era
+-    a receita de ASSINATURA DAS CONSULTORAS, só relabelada como se fosse
+-    receita de API. Agora usa DeveloperAccount/ApiKey/ApiUsageLog de
+-    verdade — os mesmos modelos que apps/developers usa.
+-    """
+-    from django.db.models import Avg, Count, Q
+-    from django.db.models.functions import TruncDate
+-    from datetime import timedelta
+-    from apps.developers.models import DeveloperAccount, ApiSubscription
+-
+-    now = timezone.now()
+-    desde_30d = now - timedelta(days=30)
+-
+-    total_developers = DeveloperAccount.objects.count()
+-    chaves = ApiKey.objects.filter(developer__isnull=False).select_related('developer')
+-    chaves_ativas = chaves.filter(is_active=True).count()
+-
+-    logs_30d = ApiUsageLog.objects.filter(api_key__developer__isnull=False, created_at__gte=desde_30d)
+-    total_requests_30d = logs_30d.count()
+-    erros_30d = logs_30d.filter(status_code__gte=400).count()
+-    error_rate = round(erros_30d / total_requests_30d * 100, 1) if total_requests_30d else 0.0
+-    avg_response_time = round(logs_30d.aggregate(m=Avg('response_time_ms'))['m'] or 0, 0)
+-
+-    # Série diária, últimos 30 dias — pra gráfico de tendência.
+-    requests_by_day = list(
+-        logs_30d.annotate(dia=TruncDate('created_at'))
+-        .values('dia')
+-        .annotate(total=Count('id'))
+-        .order_by('dia')
+-    )
+-
+-    # Endpoints mais chamados — de verdade, não um catálogo hardcoded.
+-    top_endpoints = list(
+-        logs_30d.values('endpoint')
+-        .annotate(chamadas=Count('id'))
+-        .order_by('-chamadas')[:10]
+-    )
+-
+-    # Uma linha por chave real, com quem é o desenvolvedor dono.
+-    keys_data = [
+-        {
+-            'id': str(k.id),
+-            'name': k.name,
+-            'key_prefix': k.key[:12] + '...',
+-            'developer_name': k.developer.name if k.developer else None,
+-            'developer_email': k.developer.email if k.developer else None,
+-            'plan': k.plan,
+-            'is_active': k.is_active,
+-            'rate_limit': k.rate_limit,
+-            'monthly_quota': k.monthly_quota,
+-            'requests_30d': k.usage_logs.filter(created_at__gte=desde_30d).count(),
+-            'last_used': k.last_used.isoformat() if k.last_used else None,
+-        }
+-        for k in chaves.order_by('-created_at')[:50]
+-    ]
+-
+-    # 💰 Fase 4: receita REAL de assinatura de API — mesma tabela de
+-    # idempotência que a receita de assinatura das consultoras usa
+-    # (ProcessedPaymentEvent), filtrando pelo lado developer desta vez.
+-    from inventory.models import ProcessedPaymentEvent
+-    eventos_api = ProcessedPaymentEvent.objects.filter(developer__isnull=False)
+-    revenue_api_mrr = eventos_api.filter(
+-        processed_at__gte=now - timedelta(days=30)
+-    ).aggregate(s=Sum('value'))['s'] or 0
+-    assinaturas_ativas = ApiSubscription.objects.filter(expires_at__gt=now).count()
+-
+-    return Response({
+-        'total_developers': total_developers,
+-        'active_keys': chaves_ativas,
+-        'total_requests_30d': total_requests_30d,
+-        'error_rate_percent': error_rate,
+-        'avg_response_time_ms': avg_response_time,
+-        'requests_by_day': [
+-            {'date': r['dia'].isoformat(), 'count': r['total']} for r in requests_by_day
+-        ],
+-        'top_endpoints': top_endpoints,
+-        'keys': keys_data,
+-        'revenue_api_mrr': float(revenue_api_mrr),
+-        'active_api_subscriptions': assinaturas_ativas,
+-        'generated_at': now.isoformat(),
+-        'data_freshness': 'real-time',
+-    })
+ 
+ # ─────────────────────────────────────────────────────────────
+ # AÇÕES ADMINISTRATIVAS (Updates Seguros)
+@@ -1141,71 +1029,3 @@ def update_system_config(request):
+         'ocr_enabled': cfg.ocr_enabled,
+         'updated_fields': alterados,
+     })
+-
+-# ─────────────────────────────────────────────────────────────
+-# 💰 PLANOS DE API (Fase 4) — mesmo padrão do plan-configs das consultoras
+-# ─────────────────────────────────────────────────────────────
+-
+-def _serialize_api_plan_config(c):
+-    return {
+-        'plan_type': c.plan_type,
+-        'display_name': c.display_name,
+-        'monthly_price': float(c.monthly_price),
+-        'yearly_price': float(c.yearly_price),
+-        'monthly_quota': c.monthly_quota,
+-        'rate_limit': c.rate_limit,
+-        'is_visible': c.is_visible,
+-    }
+-
+-
+-@api_view(['GET'])
+-@permission_classes([IsAdminUser])
+-def list_api_plan_configs(request):
+-    """GET /api/admin/api-plan-configs/"""
+-    from apps.developers.models import ApiPlanConfig
+-    configs = ApiPlanConfig.objects.all().order_by('monthly_price')
+-    return Response([_serialize_api_plan_config(c) for c in configs])
+-
+-
+-@api_view(['PATCH'])
+-@permission_classes([IsAdminUser])
+-def update_api_plan_config(request, plan_type):
+-    """
+-    PATCH /api/admin/api-plan-configs/<plan_type>/
+-
+-    Mesmo elo que update_plan_config já tem pras consultoras: mudar
+-    monthly_price/yearly_price aqui reflete direto no checkout
+-    (asaas_service.create_developer_payment_link) e em /api/pricing.
+-    """
+-    from apps.developers.models import ApiPlanConfig
+-    config = ApiPlanConfig.objects.filter(plan_type=plan_type).first()
+-    if not config:
+-        return Response({'error': f"Plano de API '{plan_type}' não encontrado."}, status=404)
+-
+-    editable_decimal = {'monthly_price', 'yearly_price'}
+-    editable_int = {'monthly_quota', 'rate_limit'}
+-    editable_bool = {'is_visible'}
+-    editable_str = {'display_name'}
+-
+-    data = request.data or {}
+-    errors = {}
+-    for field, value in data.items():
+-        try:
+-            if field in editable_decimal:
+-                setattr(config, field, Decimal(str(value)))
+-            elif field in editable_int:
+-                setattr(config, field, int(value))
+-            elif field in editable_bool:
+-                setattr(config, field, bool(value))
+-            elif field in editable_str:
+-                setattr(config, field, str(value)[:50])
+-            # campos fora dessas listas são ignorados silenciosamente —
+-            # mesma postura de segurança do update_plan_config.
+-        except (ValueError, TypeError):
+-            errors[field] = 'Valor inválido'
+-
+-    if errors:
+-        return Response({'error': 'Campos inválidos', 'details': errors}, status=400)
+-
+-    config.save()
+-    return Response(_serialize_api_plan_config(config))
+\ No newline at end of file
+diff --git a/backend/core/inventory/migrations/0001_initial.py b/backend/core/inventory/migrations/0001_initial.py
+new file mode 100644
+index 0000000..41afed3
+--- /dev/null
++++ b/backend/core/inventory/migrations/0001_initial.py
+@@ -0,0 +1,541 @@
++# Generated by Django 5.2.13 on 2026-08-02 22:16
++
++import django.core.validators
++import django.db.models.deletion
++import django.utils.timezone
++import uuid
++from decimal import Decimal
++from django.conf import settings
++from django.db import migrations, models
++
++
++class Migration(migrations.Migration):
++
++    initial = True
++
++    dependencies = [
++        ('auth', '0012_alter_user_first_name_max_length'),
++    ]
++
++    operations = [
++        migrations.CreateModel(
++            name='Cart',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('session_id', models.CharField(db_index=True, max_length=100)),
++                ('checked_out', models.BooleanField(default=False)),
++                ('created_at', models.DateTimeField(auto_now_add=True)),
++                ('updated_at', models.DateTimeField(auto_now=True)),
++                ('payment_method', models.CharField(blank=True, choices=[('pix', 'PIX'), ('cartao', 'Cartão de crédito')], max_length=10, null=True)),
++                ('payment_confirmed', models.BooleanField(default=False)),
++                ('whatsapp_message', models.TextField(blank=True, null=True)),
++            ],
++            options={
++                'ordering': ['-updated_at'],
++            },
++        ),
++        migrations.CreateModel(
++            name='CrawlerLog',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('sku', models.CharField(db_index=True, max_length=50)),
++                ('status_code', models.IntegerField(blank=True, null=True)),
++                ('error_message', models.TextField(blank=True, null=True)),
++                ('created_at', models.DateTimeField(auto_now_add=True)),
++                ('retry_count', models.IntegerField(default=0)),
++            ],
++            options={
++                'verbose_name': 'Log do Crawler',
++                'verbose_name_plural': 'Logs do Crawler',
++                'ordering': ['-created_at'],
++            },
++        ),
++        migrations.CreateModel(
++            name='InventoryItem',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('cost_price', models.DecimalField(decimal_places=2, default=0.0, max_digits=10, verbose_name='Custo Médio')),
++                ('sale_price', models.DecimalField(decimal_places=2, default=0.0, max_digits=10, verbose_name='Preço Venda')),
++                ('total_quantity', models.IntegerField(default=0)),
++                ('min_quantity', models.IntegerField(default=5)),
++                ('updated_at', models.DateTimeField(auto_now=True)),
++            ],
++            options={
++                'verbose_name': 'Item de Estoque',
++                'verbose_name_plural': 'Itens de Estoque',
++            },
++        ),
++        migrations.CreateModel(
++            name='Lead',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('name', models.CharField(max_length=200)),
++                ('phone', models.CharField(db_index=True, max_length=20)),
++                ('email', models.EmailField(blank=True, max_length=254, null=True)),
++                ('birth_date', models.DateField(blank=True, null=True)),
++                ('whatsapp_opt_in', models.BooleanField(default=False)),
++                ('source', models.CharField(choices=[('storefront', 'Vitrine'), ('dashboard', 'Manual')], default='storefront', max_length=20)),
++                ('consent_version', models.CharField(blank=True, max_length=20, null=True)),
++                ('consent_timestamp', models.DateTimeField(blank=True, null=True)),
++                ('tags', models.JSONField(blank=True, default=list)),
++                ('total_orders', models.PositiveIntegerField(default=0)),
++                ('total_spent', models.DecimalField(decimal_places=2, default=0, max_digits=10)),
++                ('created_at', models.DateTimeField(auto_now_add=True)),
++                ('last_seen', models.DateTimeField(auto_now=True)),
++                ('anonymized_at', models.DateTimeField(blank=True, null=True)),
++            ],
++            options={
++                'ordering': ['-last_seen'],
++            },
++        ),
++        migrations.CreateModel(
++            name='PlanConfig',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('plan_type', models.CharField(choices=[('free', 'Free'), ('pro', 'Pro'), ('premium', 'Premium')], max_length=20, unique=True)),
++                ('display_name', models.CharField(max_length=50)),
++                ('description', models.TextField(blank=True)),
++                ('max_products', models.IntegerField(blank=True, help_text='NULL = ilimitado', null=True)),
++                ('max_storage_mb', models.IntegerField(default=100)),
++                ('can_use_scanner', models.BooleanField(default=True)),
++                ('can_use_storefront', models.BooleanField(default=False)),
++                ('can_use_alerts', models.BooleanField(default=False)),
++                ('can_use_ai_assistant', models.BooleanField(default=False)),
++                ('can_use_analytics', models.BooleanField(default=False)),
++                ('can_export_data', models.BooleanField(default=False)),
++                ('can_use_api', models.BooleanField(default=False)),
++                ('monthly_price', models.DecimalField(decimal_places=2, default=Decimal('0.00'), max_digits=10)),
++                ('yearly_price', models.DecimalField(decimal_places=2, default=Decimal('0.00'), max_digits=10)),
++                ('yearly_discount_percent', models.IntegerField(default=0, validators=[django.core.validators.MinValueValidator(0), django.core.validators.MaxValueValidator(100)])),
++                ('highlight_color', models.CharField(default='#3B82F6', max_length=7)),
++                ('is_popular', models.BooleanField(default=False)),
++                ('is_visible', models.BooleanField(default=True)),
++                ('sort_order', models.IntegerField(default=0)),
++                ('created_at', models.DateTimeField(auto_now_add=True)),
++                ('updated_at', models.DateTimeField(auto_now=True)),
++            ],
++            options={
++                'verbose_name': 'Configuração de Plano',
++                'verbose_name_plural': 'Configurações de Planos',
++                'db_table': 'plan_configs',
++                'ordering': ['sort_order', 'plan_type'],
++            },
++        ),
++        migrations.CreateModel(
++            name='ProcessedPaymentEvent',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('payment_id', models.CharField(db_index=True, help_text='ID da cobrança no Asaas (ex.: pay_080225913252)', max_length=100, unique=True)),
++                ('event', models.CharField(blank=True, max_length=50)),
++                ('days_granted', models.IntegerField(default=0)),
++                ('processed_at', models.DateTimeField(auto_now_add=True)),
++                ('value', models.DecimalField(blank=True, decimal_places=2, max_digits=10, null=True)),
++                ('billing_type', models.CharField(blank=True, max_length=20)),
++            ],
++            options={
++                'verbose_name': 'Cobrança processada',
++                'verbose_name_plural': 'Cobranças processadas',
++                'ordering': ['-processed_at'],
++            },
++        ),
++        migrations.CreateModel(
++            name='Promotion',
++            fields=[
++                ('id', models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
++                ('title', models.CharField(max_length=100)),
++                ('message', models.TextField()),
++                ('promotion_type', models.CharField(choices=[('banner', 'Banner'), ('modal', 'Modal'), ('notification', 'Notificação'), ('email', 'Email')], default='banner', max_length=20)),
++                ('target_audience', models.CharField(choices=[('all', 'Todos os usuários'), ('free', 'Apenas plano Free'), ('pro', 'Apenas plano Pro'), ('new_users', 'Usuários novos (< 7 dias)'), ('inactive', 'Usuários inativos (> 30 dias)')], default='free', max_length=20)),
++                ('discount_percent', models.IntegerField(default=0, validators=[django.core.validators.MinValueValidator(0), django.core.validators.MaxValueValidator(100)])),
++                ('discount_amount', models.DecimalField(decimal_places=2, default=Decimal('0.00'), max_digits=10)),
++                ('starts_at', models.DateTimeField(default=django.utils.timezone.now)),
++                ('ends_at', models.DateTimeField(blank=True, null=True)),
++                ('is_active', models.BooleanField(default=True)),
++                ('max_views', models.IntegerField(blank=True, null=True)),
++                ('current_views', models.IntegerField(default=0)),
++                ('background_color', models.CharField(default='#3B82F6', max_length=7)),
++                ('text_color', models.CharField(default='#FFFFFF', max_length=7)),
++                ('created_at', models.DateTimeField(auto_now_add=True)),
++                ('updated_at', models.DateTimeField(auto_now=True)),
++            ],
++            options={
++                'verbose_name': 'Promoção',
++                'verbose_name_plural': 'Promoções',
++                'db_table': 'promotions',
++                'ordering': ['-created_at'],
++            },
++        ),
++        migrations.CreateModel(
++            name='RegistrationSession',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('started_at', models.DateTimeField(auto_now_add=True)),
++                ('finished_at', models.DateTimeField(blank=True, null=True)),
++                ('is_active', models.BooleanField(default=True)),
++                ('products_count', models.PositiveIntegerField(default=0)),
++                ('total_estimated_cost', models.DecimalField(decimal_places=2, default=0, max_digits=10)),
++                ('payment_method', models.CharField(blank=True, max_length=50, null=True)),
++                ('total_paid', models.DecimalField(blank=True, decimal_places=2, max_digits=10, null=True)),
++                ('installments', models.PositiveIntegerField(default=1)),
++            ],
++            options={
++                'verbose_name': 'Sessão de Cadastro',
++                'verbose_name_plural': 'Sessões de Cadastro',
++                'ordering': ['-started_at'],
++            },
++        ),
++        migrations.CreateModel(
++            name='Sale',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('transaction_type', models.CharField(choices=[('VENDA', 'Venda'), ('PRESENTE', 'Presente Pessoal'), ('BRINDE', 'Brinde Cliente'), ('PERDA', 'Perda/Avaria'), ('USO_PROPRIO', 'Uso Próprio')], default='VENDA', max_length=20)),
++                ('total_amount', models.DecimalField(decimal_places=2, default=0.0, max_digits=10)),
++                ('client_name', models.CharField(blank=True, max_length=100, null=True)),
++                ('payment_method', models.CharField(blank=True, default='DINHEIRO', max_length=50)),
++                ('notes', models.TextField(blank=True, null=True, verbose_name='Observações')),
++                ('created_at', models.DateTimeField(auto_now_add=True)),
++            ],
++            options={
++                'verbose_name': 'Venda',
++                'verbose_name_plural': 'Vendas',
++                'ordering': ['-created_at'],
++            },
++        ),
++        migrations.CreateModel(
++            name='Store',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('name', models.CharField(default='Minha Unidade', max_length=255)),
++                ('slug', models.SlugField(blank=True, max_length=120, unique=True)),
++                ('whatsapp', models.CharField(blank=True, max_length=20, null=True)),
++                ('is_active', models.BooleanField(default=True)),
++                ('created_at', models.DateTimeField(auto_now_add=True)),
++                ('updated_at', models.DateTimeField(auto_now=True)),
++                ('mode', models.CharField(choices=[('unattended', 'Autônomo (totem)'), ('attended', 'Atendido (balcão)'), ('hybrid', 'Híbrido')], default='unattended', max_length=20)),
++                ('address', models.CharField(blank=True, max_length=255)),
++                ('condo_name', models.CharField(blank=True, max_length=255)),
++                ('opening_hours', models.JSONField(blank=True, default=dict, help_text='Vazio = 24h (caso do totem).')),
++                ('plan', models.CharField(choices=[('free', 'Free'), ('pro', 'Pro')], default='free', help_text='Plano de assinatura da loja', max_length=20)),
++                ('payment_provider', models.CharField(blank=True, max_length=50, null=True)),
++                ('payment_external_id', models.CharField(blank=True, max_length=100, null=True)),
++                ('subscription_started_at', models.DateTimeField(blank=True, null=True)),
++                ('subscription_expires_at', models.DateTimeField(blank=True, null=True)),
++                ('trial_started_at', models.DateTimeField(blank=True, null=True)),
++                ('trial_ends_at', models.DateTimeField(blank=True, null=True)),
++            ],
++            options={
++                'verbose_name': 'Loja',
++                'verbose_name_plural': 'Lojas',
++            },
++        ),
++        migrations.CreateModel(
++            name='SystemConfig',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('maintenance_mode', models.BooleanField(default=False)),
++                ('maintenance_message', models.TextField(blank=True, default='O sistema está em manutenção programada e pode apresentar instabilidade ou indisponibilidade temporária em algumas funcionalidades. Já estamos de olho — pode continuar usando normalmente.')),
++                ('ai_enabled', models.BooleanField(default=True)),
++                ('storefront_enabled', models.BooleanField(default=True)),
++                ('ocr_enabled', models.BooleanField(default=True)),
++                ('updated_at', models.DateTimeField(auto_now=True)),
++            ],
++            options={
++                'verbose_name': 'Configuração do sistema',
++                'verbose_name_plural': 'Configuração do sistema',
++            },
++        ),
++        migrations.CreateModel(
++            name='ThemeConfig',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('color_primary', models.CharField(default='#871745', max_length=7)),
++                ('color_primary_light', models.CharField(default='#FDF2F7', max_length=7)),
++                ('color_success', models.CharField(default='#2E8B57', max_length=7)),
++                ('color_text', models.CharField(default='#2D292E', max_length=7)),
++                ('color_accent', models.CharField(default='#A91B60', max_length=7)),
++                ('color_destructive', models.CharField(default='#DC2626', max_length=7)),
++                ('color_warning', models.CharField(default='#F59E0B', max_length=7)),
++                ('color_background', models.CharField(default='#FFFFFF', max_length=7)),
++                ('color_card', models.CharField(default='#FFFFFF', max_length=7)),
++                ('color_border', models.CharField(default='#E5E7EB', max_length=7)),
++                ('app_name', models.CharField(default='Minha Amora', max_length=100)),
++                ('logo_url', models.URLField(blank=True, null=True)),
++                ('updated_at', models.DateTimeField(auto_now=True)),
++            ],
++            options={
++                'verbose_name': 'Configuração de Tema',
++                'verbose_name_plural': 'Configuração de Tema',
++            },
++        ),
++        migrations.CreateModel(
++            name='UserBehaviorLog',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('action_type', models.CharField(choices=[('product_scan', 'Produto Escaneado'), ('product_add', 'Produto Adicionado'), ('product_edit', 'Produto Editado'), ('stock_update', 'Estoque Atualizado'), ('sale_record', 'Venda Registrada'), ('report_view', 'Relatório Visualizado'), ('storefront_access', 'Vitrine Acessada'), ('plan_view', 'Página de Planos Visualizada')], max_length=20)),
++                ('plan_at_time', models.CharField(max_length=10)),
++                ('products_count_at_time', models.IntegerField()),
++                ('day_of_week', models.IntegerField()),
++                ('hour_of_day', models.IntegerField()),
++                ('session_duration_minutes', models.IntegerField(blank=True, null=True)),
++                ('feature_used', models.CharField(blank=True, max_length=50)),
++                ('created_at', models.DateTimeField(auto_now_add=True)),
++            ],
++            options={
++                'db_table': 'user_behavior_logs',
++            },
++        ),
++        migrations.CreateModel(
++            name='UserPlanCache',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('current_plan', models.CharField(default='free', max_length=20)),
++                ('max_products', models.IntegerField(blank=True, null=True)),
++                ('products_used', models.IntegerField(default=0)),
++                ('can_use_scanner', models.BooleanField(default=True)),
++                ('can_use_storefront', models.BooleanField(default=False)),
++                ('can_use_alerts', models.BooleanField(default=False)),
++                ('can_use_ai_assistant', models.BooleanField(default=False)),
++                ('can_use_analytics', models.BooleanField(default=False)),
++                ('last_updated', models.DateTimeField(auto_now=True)),
++            ],
++            options={
++                'verbose_name': 'Cache de Plano',
++                'verbose_name_plural': 'Cache de Planos',
++                'db_table': 'user_plan_cache',
++            },
++        ),
++        migrations.CreateModel(
++            name='CustomUser',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('password', models.CharField(max_length=128, verbose_name='password')),
++                ('last_login', models.DateTimeField(blank=True, null=True, verbose_name='last login')),
++                ('email', models.EmailField(max_length=254, unique=True)),
++                ('name', models.CharField(max_length=255)),
++                ('is_active', models.BooleanField(default=True)),
++                ('is_staff', models.BooleanField(default=False)),
++                ('is_superuser', models.BooleanField(default=False)),
++                ('groups', models.ManyToManyField(blank=True, help_text='The groups this user belongs to. A user will get all permissions granted to each of their groups.', related_name='user_set', related_query_name='user', to='auth.group', verbose_name='groups')),
++                ('user_permissions', models.ManyToManyField(blank=True, help_text='Specific permissions for this user.', related_name='user_set', related_query_name='user', to='auth.permission', verbose_name='user permissions')),
++            ],
++            options={
++                'abstract': False,
++            },
++        ),
++        migrations.CreateModel(
++            name='ApiKey',
++            fields=[
++                ('id', models.UUIDField(default=uuid.uuid4, editable=False, primary_key=True, serialize=False)),
++                ('name', models.CharField(help_text='Nome descritivo da chave', max_length=100)),
++                ('key', models.CharField(editable=False, max_length=64, unique=True)),
++                ('plan', models.CharField(choices=[('starter', 'Starter'), ('pro', 'Pro'), ('enterprise', 'Enterprise')], default='starter', max_length=20)),
++                ('scopes', models.JSONField(default=list, help_text='Lista de scopes permitidos')),
++                ('rate_limit', models.IntegerField(default=20, help_text='Requisições por minuto')),
++                ('monthly_quota', models.IntegerField(default=1000, help_text='Requisições por mês')),
++                ('is_active', models.BooleanField(default=True)),
++                ('last_used', models.DateTimeField(blank=True, null=True)),
++                ('created_at', models.DateTimeField(auto_now_add=True)),
++                ('expires_at', models.DateTimeField(blank=True, help_text='Expiração da chave', null=True)),
++                ('owner', models.ForeignKey(blank=True, help_text='Usuário dono da chave (opcional para clientes externos)', null=True, on_delete=django.db.models.deletion.CASCADE, related_name='api_keys', to=settings.AUTH_USER_MODEL)),
++            ],
++            options={
++                'db_table': 'api_keys',
++            },
++        ),
++        migrations.CreateModel(
++            name='ApiUsageLog',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('endpoint', models.CharField(max_length=100)),
++                ('method', models.CharField(max_length=10)),
++                ('status_code', models.IntegerField()),
++                ('response_time_ms', models.IntegerField()),
++                ('ip_address', models.GenericIPAddressField(blank=True, null=True)),
++                ('user_agent', models.TextField(blank=True)),
++                ('created_at', models.DateTimeField(auto_now_add=True)),
++                ('api_key', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='usage_logs', to='inventory.apikey')),
++            ],
++            options={
++                'db_table': 'api_usage_logs',
++            },
++        ),
++        migrations.CreateModel(
++            name='CartItem',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('inventory_id', models.CharField(max_length=50)),
++                ('product_name', models.CharField(max_length=255)),
++                ('quantity', models.PositiveIntegerField(default=1)),
++                ('price_snapshot', models.DecimalField(decimal_places=2, default=0, max_digits=10)),
++                ('cart', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='items', to='inventory.cart')),
++            ],
++        ),
++        migrations.CreateModel(
++            name='ConsentRecord',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('email', models.EmailField(blank=True, db_index=True, help_text='Email do titular', max_length=254)),
++                ('session_id', models.CharField(blank=True, help_text='ID da sessão para anônimos', max_length=100)),
++                ('ip_hash', models.CharField(db_index=True, help_text='Hash SHA-256 do IP', max_length=64)),
++                ('purpose_flags', models.JSONField(default=list, help_text='Finalidades consentidas')),
++                ('term_version', models.CharField(db_index=True, help_text='Versão do termo', max_length=20)),
++                ('accepted_at', models.DateTimeField(db_index=True, help_text='Data da manifestação')),
++                ('revoked_at', models.DateTimeField(blank=True, help_text='Data da revogação', null=True)),
++                ('user_agent', models.TextField(blank=True, help_text='User-Agent (truncado no serializer)')),
++                ('created_at', models.DateTimeField(auto_now_add=True)),
++                ('updated_at', models.DateTimeField(auto_now=True)),
++                ('user', models.ForeignKey(blank=True, help_text='Usuário autenticado (nulo para pré-cadastro/anônimos)', null=True, on_delete=django.db.models.deletion.CASCADE, related_name='consent_records', to=settings.AUTH_USER_MODEL)),
++            ],
++            options={
++                'verbose_name': 'Registro de Consentimento LGPD',
++                'verbose_name_plural': 'Registros de Consentimento LGPD',
++                'ordering': ['-accepted_at'],
++            },
++        ),
++        migrations.CreateModel(
++            name='ExternalBarcodeCatalog',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('brand', models.CharField(db_index=True, max_length=100)),
++                ('gtin', models.CharField(db_index=True, max_length=14, unique=True)),
++                ('description', models.CharField(max_length=255)),
++                ('source', models.CharField(default='bluesoft', max_length=50)),
++                ('source_url', models.URLField(blank=True, null=True)),
++                ('matched', models.BooleanField(db_index=True, default=False)),
++                ('searched_product_sku', models.CharField(blank=True, db_index=True, max_length=50, null=True)),
++                ('searched_product_name', models.CharField(blank=True, max_length=255, null=True)),
++                ('search_term_used', models.CharField(blank=True, max_length=255, null=True)),
++                ('confidence_level', models.CharField(blank=True, max_length=20, null=True)),
++                ('created_at', models.DateTimeField(auto_now_add=True)),
++                ('updated_at', models.DateTimeField(auto_now=True)),
++            ],
++            options={
++                'db_table': 'external_barcode_catalog',
++                'indexes': [models.Index(fields=['brand', 'matched'], name='external_ba_brand_e720d3_idx'), models.Index(fields=['source', 'created_at'], name='external_ba_source_5757d7_idx'), models.Index(fields=['searched_product_sku'], name='external_ba_searche_f613ee_idx')],
++            },
++        ),
++        migrations.CreateModel(
++            name='InventoryBatch',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('quantity', models.IntegerField()),
++                ('batch_code', models.CharField(blank=True, max_length=50, null=True, verbose_name='Lote')),
++                ('expiration_date', models.DateField(blank=True, null=True, verbose_name='Validade')),
++                ('entry_date', models.DateTimeField(auto_now_add=True)),
++                ('item', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='batches', to='inventory.inventoryitem')),
++            ],
++            options={
++                'verbose_name': 'Lote',
++                'verbose_name_plural': 'Lotes',
++            },
++        ),
++        migrations.AddField(
++            model_name='cart',
++            name='lead',
++            field=models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, related_name='carts', to='inventory.lead'),
++        ),
++        migrations.CreateModel(
++            name='MLInsight',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('insight_type', models.CharField(choices=[('conversion_prediction', 'Predição de Conversão'), ('churn_risk', 'Risco de Churn'), ('product_recommendation', 'Recomendação de Produto'), ('optimal_pricing', 'Precificação Otimizada'), ('seasonal_trend', 'Tendência Sazonal')], max_length=30)),
++                ('target_segment', models.CharField(max_length=50)),
++                ('confidence_score', models.FloatField()),
++                ('insight_data', models.JSONField()),
++                ('model_version', models.CharField(default='v1.0', max_length=20)),
++                ('training_data_size', models.IntegerField()),
++                ('generated_at', models.DateTimeField(auto_now_add=True)),
++                ('expires_at', models.DateTimeField()),
++                ('is_active', models.BooleanField(default=True)),
++            ],
++            options={
++                'db_table': 'ml_insights',
++                'indexes': [models.Index(fields=['insight_type', 'target_segment'], name='ml_insights_insight_368b60_idx'), models.Index(fields=['generated_at'], name='ml_insights_generat_67fd30_idx')],
++            },
++        ),
++        migrations.CreateModel(
++            name='Product',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('name', models.CharField(max_length=255, verbose_name='Nome do Produto')),
++                ('brand', models.CharField(blank=True, max_length=100, null=True, verbose_name='Marca')),
++                ('bar_code', models.CharField(blank=True, max_length=50, null=True, unique=True, verbose_name='Código de Barras')),
++                ('natura_sku', models.CharField(blank=True, max_length=50, null=True, unique=True, verbose_name='SKU Natura')),
++                ('category', models.CharField(default='Geral', max_length=100)),
++                ('description', models.TextField(blank=True, null=True)),
++                ('image_url', models.URLField(blank=True, max_length=500, null=True)),
++                ('min_quantity', models.PositiveIntegerField(default=5)),
++                ('official_price', models.DecimalField(decimal_places=2, default=0.0, max_digits=10, verbose_name='Preço Site')),
++                ('last_checked_price', models.DecimalField(decimal_places=2, max_digits=10, null=True)),
++                ('last_checked_at', models.DateTimeField(blank=True, null=True, verbose_name='Última Checagem de Preço')),
++                ('created_at', models.DateTimeField(auto_now_add=True)),
++            ],
++            options={
++                'verbose_name': 'Produto',
++                'verbose_name_plural': 'Produtos',
++                'indexes': [models.Index(fields=['bar_code'], name='inventory_p_bar_cod_956879_idx'), models.Index(fields=['natura_sku'], name='inventory_p_natura__691460_idx'), models.Index(fields=['category'], name='inventory_p_categor_b457a1_idx')],
++            },
++        ),
++        migrations.CreateModel(
++            name='PriceHistory',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('price', models.DecimalField(decimal_places=2, max_digits=10, verbose_name='Preço Coletado')),
++                ('captured_at', models.DateTimeField(auto_now_add=True)),
++                ('product', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='price_history', to='inventory.product')),
++            ],
++            options={
++                'verbose_name': 'Histórico de Preço',
++                'verbose_name_plural': 'Históricos de Preço',
++                'ordering': ['-captured_at'],
++            },
++        ),
++        migrations.AddField(
++            model_name='inventoryitem',
++            name='product',
++            field=models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, to='inventory.product'),
++        ),
++        migrations.CreateModel(
++            name='PromotionView',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('viewed_at', models.DateTimeField(auto_now_add=True)),
++                ('promotion', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='views', to='inventory.promotion')),
++            ],
++        ),
++        migrations.CreateModel(
++            name='SaleItem',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('quantity', models.IntegerField()),
++                ('unit_price_sold', models.DecimalField(decimal_places=2, max_digits=10)),
++                ('unit_cost_at_time', models.DecimalField(decimal_places=2, default=0, max_digits=10)),
++                ('batch', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, to='inventory.inventorybatch')),
++                ('product', models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, to='inventory.product')),
++                ('sale', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='items', to='inventory.sale')),
++            ],
++            options={
++                'verbose_name': 'Item de Venda',
++                'verbose_name_plural': 'Itens de Venda',
++            },
++        ),
++        migrations.CreateModel(
++            name='StockTransaction',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('transaction_type', models.CharField(choices=[('ENTRADA', 'Entrada de Estoque'), ('VENDA', 'Saída por Venda'), ('PRESENTE', 'Saída para Presente'), ('BRINDE', 'Saída para Brinde'), ('USO_PROPRIO', 'Uso Próprio'), ('PERDA', 'Perda / Avaria'), ('AJUSTE', 'Ajuste Manual')], max_length=20)),
++                ('quantity', models.IntegerField()),
++                ('unit_cost', models.DecimalField(blank=True, decimal_places=2, max_digits=10, null=True)),
++                ('unit_price', models.DecimalField(blank=True, decimal_places=2, max_digits=10, null=True)),
++                ('description', models.CharField(blank=True, max_length=255)),
++                ('created_at', models.DateTimeField(auto_now_add=True)),
++                ('batch', models.ForeignKey(blank=True, null=True, on_delete=django.db.models.deletion.SET_NULL, to='inventory.inventorybatch')),
++                ('product', models.ForeignKey(on_delete=django.db.models.deletion.PROTECT, to='inventory.product')),
++            ],
++            options={
++                'verbose_name': 'Transação de Estoque',
++                'verbose_name_plural': 'Transações de Estoque',
++                'ordering': ['-created_at'],
++            },
++        ),
++    ]
+diff --git a/backend/core/inventory/migrations/0002_initial.py b/backend/core/inventory/migrations/0002_initial.py
+new file mode 100644
+index 0000000..1621af3
+--- /dev/null
++++ b/backend/core/inventory/migrations/0002_initial.py
+@@ -0,0 +1,188 @@
++# Generated by Django 5.2.13 on 2026-08-02 22:16
++
++import django.db.models.deletion
++from django.conf import settings
++from django.db import migrations, models
++
++
++class Migration(migrations.Migration):
++
++    initial = True
++
++    dependencies = [
++        ('inventory', '0001_initial'),
++        ('tenancy', '0001_initial'),
++    ]
++
++    operations = [
++        migrations.AddField(
++            model_name='store',
++            name='operator',
++            field=models.ForeignKey(blank=True, help_text='Temporariamente nulo até o onboarding novo existir.', null=True, on_delete=django.db.models.deletion.PROTECT, related_name='units', to='tenancy.operator'),
++        ),
++        migrations.AddField(
++            model_name='store',
++            name='owner',
++            field=models.OneToOneField(blank=True, null=True, on_delete=django.db.models.deletion.CASCADE, related_name='store', to=settings.AUTH_USER_MODEL),
++        ),
++        migrations.AddField(
++            model_name='stocktransaction',
++            name='store',
++            field=models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='transactions', to='inventory.store'),
++        ),
++        migrations.AddField(
++            model_name='sale',
++            name='store',
++            field=models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='sales', to='inventory.store'),
++        ),
++        migrations.AddField(
++            model_name='registrationsession',
++            name='store',
++            field=models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, to='inventory.store'),
++        ),
++        migrations.AddField(
++            model_name='promotionview',
++            name='store',
++            field=models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='promotion_views', to='inventory.store'),
++        ),
++        migrations.AddField(
++            model_name='promotion',
++            name='target_stores',
++            field=models.ManyToManyField(blank=True, related_name='targeted_promotions', to='inventory.store'),
++        ),
++        migrations.AddField(
++            model_name='processedpaymentevent',
++            name='store',
++            field=models.ForeignKey(blank=True, help_text='Preenchido só pra pagamento de assinatura de consultora (PRO).', null=True, on_delete=django.db.models.deletion.CASCADE, related_name='processed_payments', to='inventory.store'),
++        ),
++        migrations.AddField(
++            model_name='lead',
++            name='store',
++            field=models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='leads', to='inventory.store'),
++        ),
++        migrations.AddField(
++            model_name='inventoryitem',
++            name='store',
++            field=models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='items', to='inventory.store'),
++        ),
++        migrations.AddField(
++            model_name='cart',
++            name='store',
++            field=models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='storefront_carts', to='inventory.store'),
++        ),
++        migrations.AddField(
++            model_name='apikey',
++            name='store',
++            field=models.ForeignKey(blank=True, help_text='Loja associada (para consultoras)', null=True, on_delete=django.db.models.deletion.CASCADE, related_name='api_keys', to='inventory.store'),
++        ),
++        migrations.AddField(
++            model_name='userbehaviorlog',
++            name='store',
++            field=models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='behavior_logs', to='inventory.store'),
++        ),
++        migrations.AddField(
++            model_name='userplancache',
++            name='user',
++            field=models.OneToOneField(on_delete=django.db.models.deletion.CASCADE, related_name='plan_cache', to=settings.AUTH_USER_MODEL),
++        ),
++        migrations.AddIndex(
++            model_name='apiusagelog',
++            index=models.Index(fields=['api_key', 'created_at'], name='api_usage_l_api_key_288890_idx'),
++        ),
++        migrations.AddIndex(
++            model_name='apiusagelog',
++            index=models.Index(fields=['endpoint', 'status_code'], name='api_usage_l_endpoin_778a00_idx'),
++        ),
++        migrations.AddIndex(
++            model_name='consentrecord',
++            index=models.Index(fields=['email', 'term_version'], name='inventory_c_email_9c923d_idx'),
++        ),
++        migrations.AddIndex(
++            model_name='consentrecord',
++            index=models.Index(fields=['user', 'purpose_flags'], name='inventory_c_user_id_628d20_idx'),
++        ),
++        migrations.AddIndex(
++            model_name='consentrecord',
++            index=models.Index(fields=['term_version', 'accepted_at'], name='inventory_c_term_ve_99ded9_idx'),
++        ),
++        migrations.AddIndex(
++            model_name='inventorybatch',
++            index=models.Index(fields=['expiration_date'], name='inventory_i_expirat_be4f39_idx'),
++        ),
++        migrations.AddIndex(
++            model_name='inventorybatch',
++            index=models.Index(fields=['item', 'quantity'], name='inventory_i_item_id_20f608_idx'),
++        ),
++        migrations.AddIndex(
++            model_name='store',
++            index=models.Index(fields=['slug'], name='inventory_s_slug_3148b5_idx'),
++        ),
++        migrations.AddIndex(
++            model_name='store',
++            index=models.Index(fields=['owner', 'plan'], name='inventory_s_owner_i_dc04b3_idx'),
++        ),
++        migrations.AddIndex(
++            model_name='stocktransaction',
++            index=models.Index(fields=['store', 'transaction_type', 'created_at'], name='inventory_s_store_i_d95637_idx'),
++        ),
++        migrations.AddIndex(
++            model_name='stocktransaction',
++            index=models.Index(fields=['product', 'created_at'], name='inventory_s_product_0dfd3c_idx'),
++        ),
++        migrations.AddIndex(
++            model_name='promotionview',
++            index=models.Index(fields=['promotion', 'store'], name='inventory_p_promoti_3c20ae_idx'),
++        ),
++        migrations.AlterUniqueTogether(
++            name='promotionview',
++            unique_together={('promotion', 'store')},
++        ),
++        migrations.AddIndex(
++            model_name='lead',
++            index=models.Index(fields=['store', 'phone'], name='inventory_l_store_i_e40536_idx'),
++        ),
++        migrations.AlterUniqueTogether(
++            name='lead',
++            unique_together={('store', 'phone')},
++        ),
++        migrations.AddIndex(
++            model_name='inventoryitem',
++            index=models.Index(fields=['store', 'total_quantity'], name='inventory_i_store_i_9b086b_idx'),
++        ),
++        migrations.AddIndex(
++            model_name='inventoryitem',
++            index=models.Index(fields=['product', 'sale_price'], name='inventory_i_product_7be1e6_idx'),
++        ),
++        migrations.AlterUniqueTogether(
++            name='inventoryitem',
++            unique_together={('store', 'product')},
++        ),
++        migrations.AddIndex(
++            model_name='cart',
++            index=models.Index(fields=['store', 'session_id'], name='inventory_c_store_i_349268_idx'),
++        ),
++        migrations.AddIndex(
++            model_name='apikey',
++            index=models.Index(fields=['key'], name='api_keys_key_291dcc_idx'),
++        ),
++        migrations.AddIndex(
++            model_name='apikey',
++            index=models.Index(fields=['owner', 'is_active'], name='api_keys_owner_i_565a54_idx'),
++        ),
++        migrations.AddIndex(
++            model_name='apikey',
++            index=models.Index(fields=['store', 'plan'], name='api_keys_store_i_829231_idx'),
++        ),
++        migrations.AddIndex(
++            model_name='userbehaviorlog',
++            index=models.Index(fields=['action_type', 'plan_at_time'], name='user_behavi_action__c79fb6_idx'),
++        ),
++        migrations.AddIndex(
++            model_name='userbehaviorlog',
++            index=models.Index(fields=['created_at'], name='user_behavi_created_122497_idx'),
++        ),
++        migrations.AddIndex(
++            model_name='userbehaviorlog',
++            index=models.Index(fields=['store', 'action_type'], name='user_behavi_store_i_4693a4_idx'),
++        ),
++    ]
+diff --git a/backend/core/inventory/models.py b/backend/core/inventory/models.py
+index 1d49b1d..b3d627d 100644
+--- a/backend/core/inventory/models.py
++++ b/backend/core/inventory/models.py
+@@ -151,14 +151,54 @@ class CrawlerLog(models.Model):
+ # ==========================================
+ 
+ class Store(models.Model):
+-    """Loja/Perfil da consultora"""
+-    name = models.CharField(max_length=255, default='Minha Loja Natura')
++    """
++    A unidade física — um mercadinho.
++
++    ⚠️ SERÁ RENOMEADO PARA `Unit`. O nome antigo ficou porque a renomeação
++    toca ~100 pontos (72 filtros `store=` em views.py, 8 FKs, serializers)
++    e foi separada em um bloco próprio, para que um erro de renomeação não
++    se confunda com um erro de modelagem.
++    """
++
++    class Mode(models.TextChoices):
++        UNATTENDED = 'unattended', 'Autônomo (totem)'
++        ATTENDED = 'attended', 'Atendido (balcão)'
++        HYBRID = 'hybrid', 'Híbrido'
++
++    # 🏢 A empresa dona desta unidade.
++    operator = models.ForeignKey(
++        'tenancy.Operator', on_delete=models.PROTECT, related_name='units',
++        null=True, blank=True,
++        help_text="Temporariamente nulo até o onboarding novo existir."
++    )
++
++    name = models.CharField(max_length=255, default='Minha Unidade')
+     slug = models.SlugField(unique=True, blank=True, max_length=120)
+     whatsapp = models.CharField(max_length=20, blank=True, null=True)
++    is_active = models.BooleanField(default=True)
+     created_at = models.DateTimeField(auto_now_add=True)
+     updated_at = models.DateTimeField(auto_now=True)
+-    
+-    # Relacionamento com usuário
++
++    # 🔀 Um campo agora evita um fork do produto depois. Mercadinho autônomo
++    # de condomínio e mercearia de bairro compartilham ~80% do backend; o
++    # que muda é a frente de venda. Caixa/turno, fiado e balança ficam atrás
++    # deste flag e viram feature gate de plano.
++    mode = models.CharField(
++        max_length=20, choices=Mode.choices, default=Mode.UNATTENDED
++    )
++
++    # 🏢 Específicos de mercadinho em condomínio
++    address = models.CharField(max_length=255, blank=True)
++    condo_name = models.CharField(max_length=255, blank=True)
++    opening_hours = models.JSONField(
++        default=dict, blank=True, help_text="Vazio = 24h (caso do totem)."
++    )
++
++    # ⚠️ MANTIDO POR COMPATIBILIDADE, EM VIAS DE REMOÇÃO.
++    # Este OneToOne é exatamente a limitação que o Membership resolve: ele
++    # impede que uma empresa tenha várias unidades e que várias pessoas
++    # tenham papéis distintos. Sai quando as 32 chamadas a
++    # ensure_user_has_store estiverem migradas para resolve_unit(request).
+     owner = models.OneToOneField(
+         settings.AUTH_USER_MODEL,
+         on_delete=models.CASCADE,
+@@ -902,10 +942,8 @@ class ApiKey(models.Model):
+         blank=True,
+         help_text="Loja associada (para consultoras)"
+     )
+-    # ⚠️ Adicionado junto com a fundação do produto de API (apps/developers):
+-    # chave emitida pra um desenvolvedor de verdade, não uma loja disfarçada
+-    # de "cliente de API" — antes o admin-panel simulava chaves a partir de
+-    # lojas com vitrine ativa, sem nenhuma chave real ter sido emitida.
++    # 🔜 MERCADINHO: esta chave passa a identificar um DEVICE (totem, trava
++    # de geladeira, tablet do repositor) — ver app `devices`.
+    
+     
+     plan = models.CharField(max_length=20, choices=PLAN_CHOICES, default='starter')
+@@ -1113,8 +1151,7 @@ class ProcessedPaymentEvent(models.Model):
+         ordering = ['-processed_at']
+ 
+     def __str__(self):
+-        alvo = f"loja {self.store_id}" if self.store_id else f"dev {self.developer_id}"
+-        return f"{self.payment_id} → {alvo} (+{self.days_granted}d)"
++        return f"{self.payment_id} → loja {self.store_id} (+{self.days_granted}d)"
+ 
+ # ==========================================
+ # 📇 CRM DA VITRINE (leads e carrinhos)
+diff --git a/backend/core/inventory/signals.py b/backend/core/inventory/signals.py
+index aba4eee..8c41fa0 100644
+--- a/backend/core/inventory/signals.py
++++ b/backend/core/inventory/signals.py
+@@ -44,34 +44,15 @@ def sync_admin_status_from_email(sender, instance, **kwargs):
+         instance.is_superuser = False
+ 
+ 
+-@receiver(post_save, sender=User)
+-def create_store_for_new_user(sender, instance, created, **kwargs):
+-    """
+-    Toda vez que um User é criado no banco, esta função é disparada.
+-    Garante que todo usuário tenha uma loja (Store) pronta para uso.
+-    """
+-    if created:
+-        # Pega o primeiro nome ou parte do email para montar o link da vitrine
+-        base_name = getattr(instance, 'first_name', '')
+-        if not base_name:
+-            base_name = instance.email.split('@')[0] if getattr(instance, 'email', None) else 'loja'
+-        
+-        # Garante que o slug (URL da vitrine) seja único usando um UUID curto
+-        unique_slug = f"{base_name.lower().replace(' ', '-')}-{str(uuid.uuid4())[:6]}"
+-        
+-        # Cria a Loja vinculada ao novo Usuário
+-        # 🎁 Trial: toda loja nova nasce com acesso completo por alguns dias,
+-        # sem pedir cartão. A duração vem do settings (TRIAL_DAYS) para poder
+-        # ser ajustada sem alterar código.
+-        agora = timezone.now()
+-        dias_trial = getattr(settings, 'TRIAL_DAYS', 14)
+-
+-        Store.objects.create(
+-            owner=instance,
+-            name=f"Espaço de {base_name.capitalize()}",
+-            slug=unique_slug,
+-            trial_started_at=agora,
+-            trial_ends_at=agora + timedelta(days=dias_trial),
+-            whatsapp="", # A consultora preenche depois
+-            # storefront_enabled=False (Se você tiver esse campo no model, inicie desativado)
+-        )
+\ No newline at end of file
++# ⚠️ REMOVIDO: create_store_for_new_user
++#
++# Este signal criava uma Store a cada User salvo. Fazia sentido no modelo
++# antigo (auto-cadastro de consultora, um usuário = uma loja). No
++# mercadinho ele é nocivo por dois motivos:
++#
++#   1. Cada funcionário cadastrado viraria uma UNIDADE órfã. Como a
++#      cobrança é por unidade ativa, contratar um repositor aumentaria a
++#      fatura do cliente sem que ninguém entendesse por quê.
++#   2. Convite de funcionário deve criar um Membership, nunca uma unidade.
++#
++# Quem cria Operator + primeira Unit é o fluxo de onboarding do cliente.
+diff --git a/backend/core/inventory/utils.py b/backend/core/inventory/utils.py
+index 9691398..7255da7 100644
+--- a/backend/core/inventory/utils.py
++++ b/backend/core/inventory/utils.py
+@@ -1,116 +1,115 @@
+ # backend/core/inventory/utils.py
+ """
+-Utilitários para gerenciamento de lojas (Store) e segurança tenant-aware.
++Resolução de tenant — PONTO ÚNICO DE VERDADE.
++
++⚠️ LEIA ANTES DE EDITAR
++Existiam duas implementações concorrentes de `get_current_store` e
++`ensure_user_has_store`: uma aqui e outra definida direto em views.py.
++Como a definição local de views.py vinha DEPOIS do `from .utils import ...`,
++ela sobrescrevia o nome importado — na prática, quase todo o views.py usava
++a versão local e este arquivo era ignorado. Quem editasse aqui não via
++efeito nenhum. As definições locais foram removidas; este arquivo voltou a
++ser o único lugar onde a resolução de tenant acontece.
++
++⚠️ MUDANÇA DE COMPORTAMENTO DELIBERADA
++A versão antiga CRIAVA uma loja quando o usuário não tinha nenhuma. Num
++SaaS de auto-cadastro isso é conveniente; num sistema B2B multi-cliente é
++falha de isolamento — um usuário sem permissão ganhava um tenant novo em
++vez de tomar 403. Agora: sem vínculo, sem acesso.
+ """
+ import logging
+-from django.utils.text import slugify
++
+ from django.core.exceptions import ValidationError
++from django.utils.text import slugify
++from rest_framework.exceptions import NotFound, PermissionDenied
++
+ from .models import Store
+ 
+-# Configurar logger
+ logger = logging.getLogger(__name__)
+ 
++# Header que o frontend envia quando o usuário troca de unidade no seletor.
++UNIT_HEADER = 'X-Unit-Id'
+ 
+-def get_current_store(user):
++
++def get_membership(user):
+     """
+-    Obtém ou cria a loja do usuário atual de forma robusta.
+-    
+-    Esta função implementa o padrão tenant-aware onde cada usuário
+-    tem exatamente uma Store associada.
+-    
+-    Args:
+-        user: Instância do modelo User (CustomUser ou User padrão)
+-        
+-    Returns:
+-        Store: Instância da loja do usuário
+-        
++    Vínculo ativo do usuário. Não cria nada.
++
+     Raises:
+-        ValidationError: Se houver erro na criação da loja
+-        Exception: Para outros erros inesperados
++        PermissionDenied: usuário sem vínculo ativo com nenhuma operação.
+     """
++    from tenancy.models import Membership
++
+     if not user or not user.is_authenticated:
+-        logger.warning("Tentativa de obter loja para usuário não autenticado")
+-        raise ValidationError("Usuário deve estar autenticado")
+-    
+-    try:
+-        # ✅ PRIMEIRO: Tentar buscar loja existente
+-        logger.debug(f"Buscando loja para usuário {user.id} ({user.email})")
+-        
+-        # Usar relacionamento OneToOne definido no modelo
+-        if hasattr(user, 'store') and user.store:
+-            logger.debug(f"✅ Loja encontrada: {user.store.slug}")
+-            return user.store
+-        
+-        # ✅ FALLBACK: Buscar por query direta (caso relacionamento não funcione)
+-        store = Store.objects.filter(owner=user).first()
+-        if store:
+-            logger.debug(f"✅ Loja encontrada via query: {store.slug}")
+-            return store
+-            
+-    except Exception as e:
+-        logger.warning(f"Erro ao buscar loja existente: {e}")
+-        # Continuar para criação automática
+-    
+-    # ✅ SEGUNDO: Criar nova loja automaticamente
+-    try:
+-        logger.info(f"Criando nova loja para usuário {user.id}")
+-        
+-        # Gerar nome da loja baseado no usuário
+-        user_name = getattr(user, 'name', None) or getattr(user, 'first_name', None)
+-        if user_name:
+-            store_name = f'Loja {user_name.title()}'
+-        else:
+-            # Usar parte do email como fallback
+-            email_prefix = user.email.split('@')[0]
+-            store_name = f'Loja {email_prefix.title()}'
+-        
+-        # Gerar slug único
+-        base_slug = slugify(user.email.split('@')[0])
+-        unique_slug = base_slug
+-        
+-        # ✅ GARANTIR SLUG ÚNICO
+-        counter = 1
+-        while Store.objects.filter(slug=unique_slug).exists():
+-            unique_slug = f"{base_slug}-{counter}"
+-            counter += 1
+-            
+-            # Evitar loop infinito
+-            if counter > 1000:
+-                unique_slug = f"{base_slug}-{user.id}"
+-                break
+-        
+-        # ✅ CRIAR LOJA COM CONFIGURAÇÕES PADRÃO
+-        store = Store.objects.create(
+-            owner=user,  # ✅ Usar 'owner' conforme seu modelo
+-            name=store_name,
+-            slug=unique_slug,
+-            plan='free',  # ✅ Plano padrão
+-            # Campos opcionais com valores padrão
+-            whatsapp=getattr(user, 'phone', None),  # Se existir campo phone
+-        )
+-        
+-        logger.info(f"✅ Loja criada com sucesso: {store.slug} para usuário {user.email}")
+-        return store
+-        
+-    except ValidationError as e:
+-        logger.error(f"❌ Erro de validação ao criar loja: {e}")
+-        raise
+-    except Exception as e:
+-        logger.error(f"❌ Erro inesperado ao criar loja para usuário {user.id}: {e}")
+-        raise ValidationError(f"Não foi possível criar loja: {str(e)}")
++        raise PermissionDenied("Autenticação obrigatória.")
+ 
++    vinculo = (
++        Membership.objects
++        .filter(user=user, is_active=True, operator__is_active=True)
++        .select_related('operator')
++        .first()
++    )
++    if not vinculo:
++        logger.warning("Usuário %s sem vínculo ativo — acesso negado.", user.pk)
++        raise PermissionDenied("Usuário sem vínculo com nenhuma operação.")
++    return vinculo
+ 
+-def ensure_user_has_store(user):
++
++def allowed_units(user):
++    """Queryset das unidades que este usuário pode enxergar."""
++    return get_membership(user).allowed_units()
++
++
++def resolve_unit(request):
+     """
+-    Alias para get_current_store para compatibilidade com código existente.
+-    
+-    Args:
+-        user: Instância do modelo User
+-        
+-    Returns:
+-        Store: Instância da loja do usuário
++    A unidade ativa desta requisição.
++
++    Origem: header X-Unit-Id. Sem header, cai na primeira unidade permitida
++    — que cobre o caso mais comum (cliente com uma unidade só) e mantém a
++    UX idêntica à de hoje.
++    """
++    permitidas = allowed_units(request.user)
++    unit_id = request.headers.get(UNIT_HEADER)
++
++    if unit_id:
++        unidade = permitidas.filter(pk=unit_id).first()
++        if not unidade:
++            # 404 e não 403: negar com "acesso negado" confirmaria que a
++            # unidade existe. Para quem sonda IDs alheios, ela não existe.
++            raise NotFound("Unidade não encontrada.")
++        return unidade
++
++    unidade = permitidas.order_by('id').first()
++    if not unidade:
++        raise PermissionDenied("Nenhuma unidade disponível para este usuário.")
++    return unidade
++
++
++def get_current_store(user):
+     """
+-    return get_current_store(user)
++    ⚠️ DEPRECIADO — use resolve_unit(request).
++
++    Mantido porque 32 pontos de views.py ainda chamam pelo nome antigo.
++    Devolve a primeira unidade permitida, ignorando o header de seleção:
++    a unidade ativa é uma propriedade da REQUISIÇÃO, não do usuário, e não
++    dá para descobri-la só com `user`.
++    """
++    return allowed_units(user).order_by('id').first()
++
++
++def ensure_user_has_store(user):
++    """⚠️ DEPRECIADO — use resolve_unit(request). Ver get_current_store."""
++    unidade = get_current_store(user)
++    if not unidade:
++        raise PermissionDenied("Nenhuma unidade disponível para este usuário.")
++    return unidade
++
++
++def user_can_access_unit(user, unit) -> bool:
++    """Checagem pontual, para código que já tem a unidade em mãos."""
++    if not unit:
++        return False
++    return allowed_units(user).filter(pk=unit.pk).exists()
+ 
+ 
+ def validate_store_ownership(user, store):
+diff --git a/backend/core/inventory/views.py b/backend/core/inventory/views.py
+index 459f1c4..d2b2ed0 100644
+--- a/backend/core/inventory/views.py
++++ b/backend/core/inventory/views.py
+@@ -165,7 +165,6 @@ from rest_framework_simplejwt.tokens import RefreshToken
+ from firebase_admin import auth as firebase_auth
+ 
+ from .models import CustomUser
+-from .utils import ensure_user_has_store
+ from .firebase_utils import init_firebase_safe
+ 
+ logger = logging.getLogger(__name__)
+@@ -297,127 +296,53 @@ from .serializers import (
+ # 0. HELPERS & MIXINS MULTI-TENANT
+ # ==========================================
+ 
+-def get_current_store(user):
++# ⚠️ As definições locais de get_current_store e ensure_user_has_store que
++# moravam AQUI foram removidas. Elas vinham depois do `from .utils import
++# ensure_user_has_store` no topo do arquivo e sobrescreviam o nome
++# importado — ou seja, editar utils.py não surtia efeito neste módulo.
++# A resolução de tenant agora vive só em inventory/utils.py.
++
++class TenantModelMixin:
+     """
+-    ✅ Versão atualizada com fallback e logs de auditoria
++    Ponto de estrangulamento do isolamento entre clientes.
++
++    Os ~72 filtros `store=` espalhados por este arquivo são consequência
++    deste mixin, não causa. Mudou aqui, mudou em todos.
+     """
+-    try:
+-        # Log de segurança (anonimizado se necessário)
+-        print(f"🔍 get_current_store: Usuário {user.id if user else 'Anon'}")
+-        
+-        if not user or not user.id:
+-            print("❌ Usuário inválido ou sem ID")
+-            return None
+-        
+-        # Estratégia 1: Buscar por relacionamento owner
+-        try:
+-            store = Store.objects.filter(owner=user).first()
+-            if store:
+-                print(f"✅ Loja encontrada (owner): {store.id}")
+-                return store
+-        except Exception as e:
+-            print(f"⚠️ Erro busca owner: {e}")
+-        
+-        # Estratégia 2: Buscar por owner_id direto
+-        try:
+-            stores = Store.objects.filter(owner_id=user.id)
+-            if stores.exists():
+-                store = stores.first()
+-                print(f"✅ Loja encontrada (owner_id): {store.id}")
+-                return store
+-        except Exception as e:
+-            print(f"⚠️ Erro busca owner_id: {e}")
+-        
+-        # Estratégia 3: FALLBACK - Criar loja automaticamente
+-        print(f"🏪 Criando loja automática para {user.email}")
+-        try:
+-            store = Store.objects.create(
+-                name=f"Loja de {user.email}",
+-                owner=user,
+-                slug=f"loja-{user.id}-{int(time())}",
+-                plan="free"
+-            )
+-            print(f"✅ Loja criada: {store.id}")
+-            return store
+-        except Exception as create_error:
+-            print(f"❌ Erro ao criar loja: {create_error}")
+-            
+-            # 🚨 ESTRATÉGIA 4 (PERIGOSA - LEAKAGE):
+-            # A linha abaixo foi comentada para evitar vazamento de dados entre usuários.
+-            # Se descomentar, um erro na criação pode expor a loja de outro cliente.
+-            
+-            # try:
+-            #     first_store = Store.objects.first()
+-            #     if first_store:
+-            #         print(f"⚠️ Usando primeira loja disponível: {first_store.id}")
+-            #         return first_store
+-            # except Exception: pass
+-            
+-            # Retorno seguro: Se não achou e não criou, retorna None
+-            return None
+-        
+-    except Exception as e:
+-        print(f"❌ Erro geral get_current_store: {e}")
+-        traceback.print_exc()
+-        return None
++    permission_classes = [IsAuthenticated]
+ 
++    def get_unit(self):
++        """A unidade ativa da requisição (respeita o header X-Unit-Id)."""
++        from .utils import resolve_unit
++        return resolve_unit(self.request)
+ 
+-def ensure_user_has_store(user):
+-    """
+-    ✅ Garante que o usuário tenha uma loja, lançando erro se falhar
+-    """
+-    try:
+-        store = get_current_store(user)
+-        
+-        if not store:
+-            print(f"🏪 Tentativa secundária de criação para {user.email}")
+-            try:
+-                store = Store.objects.create(
+-                    owner=user,
+-                    name=f"Loja de {user.email}",
+-                    slug=slugify(f"loja-{user.id}"),
+-                    storefront_enabled=True,
+-                    plan="free"
+-                )
+-                print(f"✅ Loja criada via ensure: {store.id}")
+-            except Exception as create_error:
+-                print(f"❌ Falha crítica ao garantir loja: {create_error}")
+-                # Retorna None para que a View trate o erro (ex: 403 Forbidden)
+-                return None
+-        
+-        return store
+-    
+-    except Exception as e:
+-        print(f"❌ Erro ensure_user_has_store: {e}")
+-        traceback.print_exc()
+-        raise
+-# inventory/mixins.py ou views.py
++    def get_units(self):
++        """Todas as unidades que o usuário pode enxergar."""
++        from .utils import allowed_units
++        return allowed_units(self.request.user)
+ 
+-class TenantModelMixin:
+-    """Mixin tenant-aware com validação de limites"""
+-    permission_classes = [IsAuthenticated]
+-    
++    # Compatibilidade: código antigo chama get_store().
+     def get_store(self):
+-        return ensure_user_has_store(self.request.user)
+-    
++        return self.get_unit()
++
+     def get_queryset(self):
+-        try:
+-            store = self.get_store()
+-            return InventoryItem.objects.filter(store=store).select_related('product')
+-        except Exception as e:
+-            print(f"❌ Erro no get_queryset: {e}")
+-            return InventoryItem.objects.none()
+-    
+-    def perform_create(self, serializer):
+-        store = self.get_store()
++        # ⚠️ NÃO envolver em try/except devolvendo none(). Numa fronteira de
++        # segurança, engolir exceção transforma falha de permissão em lista
++        # vazia — e ninguém abre chamado de tela vazia. PermissionDenied e
++        # NotFound precisam subir e virar 403/404 de verdade.
++        return (
++            InventoryItem.objects
++            .filter(store__in=self.get_units())
++            .select_related('product', 'store')
++        )
+ 
++    def perform_create(self, serializer):
++        unidade = self.get_unit()
+ 
+-        
+-        # VALIDAÇÃO DE LIMITE (novo)
+         if hasattr(self, 'check_plan_limits'):
+-            self.check_plan_limits(store)
+-        
+-        serializer.save(store=store)
++            self.check_plan_limits(unidade)
++
++        serializer.save(store=unidade)
+     
+     def check_plan_limits(self, store):
+         """Valida limites do plano antes de criar"""
+diff --git a/backend/core/requirements.txt b/backend/core/requirements.txt
+index d78ce25c39fff06266b4759046056bfd4fc03795..1d949cdd49be27af8821fa1946041888cb89d2c9 100644
+GIT binary patch
+literal 2476
+zcmZ8j!EW0|5WVv&2Fb+%L{_9^J4vB~>ojeOBvKuxK~K(#TuJMYyX)PhEanuThaP*$
+zsi&qr6zw%A(7XO5KhR(38;X+U0ER5i&d$7f^Jb{K<m6SYoUEh{KDN#jNmvE?^zJ<s
+z(n?*d|JJz@9#1qm8$Wuv{(1e=m=2yQU9ad1I)jUJ_oBPeUHbIvZ~y)K3q5Ctxpb1G
+z50ZpKf~BF{RP@>^OEV|sTlt!_p;t;5=GrGT?yQsx8)_%WAfBkE3a}(8d?;tA5aeq?
+z)%pWMYC(LGm$iBbX9DKm$u`$Y4>AC=ja8fPT#H|SB)L++Q;`*j-(~)i3{7iQ7F3w7
+z7Mh82A=-%4g1+<IP$fdXP<l=UVmLLegEE?Crq%^M-8S!?9gs=$eK_oqm!;IIu5P|f
+zg_k|LtZfsd>yg6$h0#4k2%xLSnQUo7siwUSgO_4z99(=3Z+Hq_pdnn=OgbmHb(;ni
+z(o4NG<x;WD&{Zu_pO<c_3gfzPdi{r?+B186UP!eP)s6<h#YKreIBvm)RR?78j5A#u
+z_a^qLvZcJd4s_5@`bl=L#bQNn(5tV{&Q2bUdnBfSX|w>ZX!N9+JV`nLW3cL+M4I(q
+zR9p%@H=JM>|6&)vM<wXy5QwH$1`!Zr!u=D4%FzPhsIJ5<sUqD{JS15tpt+^M^*ee7
+zZ30`4ggMg&h=|DQFyOT<K+9Zuzy9D9^T2vrO6Nh^Ci@FfE@76HWr0`p^89gppAKN4
+zug1^rCG-P(|0COp;luQZd7gqj5>!gn${QtN6p{$ZKfQm4KYG*>fs7}UC!H<Y*hZtn
+zBummkR9wb|2%y5txOU}eG)U4UgPAFeL8^}zQeYhYXf#Y7B>nBtOqCGZXp|w)*5*JE
+z{EpGUt>3LKw9$`}wDZ4pcGDrocF0a{7JDo6Ao98tNCjCifO)MIfax}O3WN1cZtOgZ
+zrx;+@zz(2k8g0fPE+8Sj9F0&HqTaCcLe8-j^!iV+<z~`+_v)OlryMqSjSXh*gk2!!
+z@Ca2M?p^=({Cu*#m`fMbOyO!jLw(6G$``_U8Dec*B}(;{sTw3hoGj9mOGyzgT7+Ox
+ziezy8<U#w4Db3niv(91FKHUd)RcO(2m`1!}Aw;m9C4&sWY6op%hD1QLAuyycl?XOq
+zm!o8`2mLXYGj|*-?Hgm}rKHo+)Wx=%Q;{#^snNk12m(+UcFx9NOo^1-pDdbnQ7%ML
+zDRko){GvN;z*tzt>H!wuV>#^EyT0TlZ(?>xkC=?DM;#V16SE`Y_8DIo-oLTs41JgD
+z@bd#k=|hJk8+?AuM`8|`gI3%fhTP?YEa$H5B|;qRg=s0{3OYw4vdyWp*cvf*N~pn2
+znjE)xTI=o+FTr49TW&nEV|1rAP3zfcgysy;LE8wgTWuVH-ObZQWs16#h}(yFvdDSl
+z<vH9J@{<!fIH`<NdLghk+u7gi_Nf!srF8tZ&DS3bH8<@ZnF{QAto+a2Uj|jG(C(_;
+z>7@Db<k?e3+J}&Y)&|weA`Xq+V8h76+$hs(kLOJIIhaRvSSTz;5d!ZJtcxLhm7bND
+zY;0SujHmt58|@*nO0+|dY03qk^PN6!amhD6oCcHDk19XMj(x*K^WHL!eY&K_5g&;;
+z-mwV6-nJ=(4ho$GM4p<h;bN=RVcJ^x{mF|_;-!ok;Dypptns0b$!nJ!nv8&`5I;)r
+zYlc&R8|J~;0>65&GVshkUSWa(kI%eTvl+9LCg3IVS0#Qqc*u`QIE=8UM6LqvqFf9e
+w_(kLkxx#_pkb%)=jfc0qwmWY2XM0>@Y<G>@=o!Q4F(FljqFUK)bc%8PAJEQ9UH||9
+
+literal 5628
+zcmai&%Whj$6o&U02{GXTj#3pBsSb@Bl2X(`DHMuY5_+Lx6ztfE-TIQ+?j<}8kAlR2
+z=cpJUm{v>+|F{3MvX2{EC_47>*=w)8*1!IBIr;bPg;b?k>ZfPvc^c-sv3^a`BF$4P
+zo#@Fl_0pz(ztUBu535SQ`&vP&m;To0p>}p8@0BX;r~7FyeVHDm-_viptJ0-(S27cw
+z@k+lw(RIJx-`5Err}xu)=|cTkrC&b!;BA$@tM?vD5(_I`bJ@UMM^9|=3)xr6f@vD-
+z`zP5o)K#UUyr-Xjmi$lpJ;`#9vlTtvzm%>`J;%DHEV??<u#l}Y-Bpscb(}g*U1=~r
+z*nv-21ajEX%RA=U%g%9nU0XTHzhlQ?8fCPvpJ}cny-`&<_f(dl^=fMC8A$OAubR(^
+z!aTjvYF~&BYg|C!L?_wqWnVwn8Wwi*$s<{cwLED?0xUYRZlKTb8r%2_j5ib+_KhX8
+z(9=P-_gGJQwIwrsbIwBFQ~83{seZ#3-_P{D?CZwTc^efhI!)h8$EWGCr04Q<l#w4w
+z(|F~xt}H?h`6rU%1fny`Pv8Z=2iYcMVjWiT+a8_hoT;9SvKN<^>;eZ)=*YjR^iFC!
+z$N;oiYbSf^j381+*#@E#xz)@TvI(7&1eZtp9G=O6Gdzbm+#@&362xwH&bCSVBg;LP
+zBn)I<?B|@J*n$=3xnOJ;c{jVr0yy1d!A9j;0bZ?~HTLLbw&kgw&9m(w*jEHzN{-yW
+zqD<pzE7M&;U@3fZHh(1!-cL7GG4?Woplb|aPp9UoGk9Mp@25M`*0hYc?CC=1On-f8
+z2Cu(#^<)X!j`Nyp2pPX@`@ss^i6$(-->|~Af#dYdhOlH`QqDc3hqA`}=V_H$OH5W*
+zPgkfH(r{fe{k-4ktgm{%O7dQ=l2{6&cs|#+D^y?@_PJt!%QF5G$+Ks!zt_@%)#grA
+zvKLyNX%%(_@}c#CPKLFx27ZpEJ?b?~dz2og+v3JG-CwFDs`Q28bx(Yt2LDiN|3}}Y
+zi^RUIv?Cd_xGT-(FG#|&p<)x2+V#vGz*dHh>0-KAiC={Y_U~rqQk7UowkdHV-B9g;
+zwVP>6^_X?I)Y2!F&rHDMR<>Xy`5Tf$nq46u+-nJA*hya<XcrtYs_fg=p3ih$S+Va(
+zUXFAk(#W=JyUw2g?ykbf?Ph(ebeboN6**jd*wOB-bJncixhjLu28LXrYo=4F6ig6@
+z8OKB6HxeH9&XuBIajeye5HNa^1_I!0yiTO=G)tT)&)d>ZpQd)q^xT*k->uq?W-lP3
+zu0_;fq#ePq8JsVOZ)VX0*^NywagzSjXW<Xk>D%;JjE^%pFRUa#>E+a><GlYwOt5|1
+zVmWeP#d*tTej|+!#no~W`8t!Pq0k)Gr(Kcfj@qX9ga*1Z7{F3$HZ^pn3?*ZSc{VcU
+zuoeb-*FZLJWu4eV{)GnvX<5hv$D*HQ>>ucIVo11qw$HS*W!t-2UNu&)<&)4bR5XYj
+z2s)e09GK@SKs}!4b#yW*1!_cvir^{)r?^KG-eIYAAvekxbhSTXg`dvzW%O@LC#T1J
+z;koQ<VM!dRLRGq@Z)O}OoTw(ZbUqR2Yn4v6kQO>T=NZ|8IsMkMumdT37}?``LadvX
+z9B5Zh@r3JWCF2XubiA;zB}pn{R3W2c{IJD&w0g&Kt}wmE3>?V8k;0O9wJ-?|bn<#`
+ztUKR3<CJankkyjdWc1Jb2ZF1-YwihLVHO!u&}nB5{@?!C*AXAQ7v?r=SThpTfy2z(
+z!yGkuxz00ep$n6<U3p2jVTz>6J4c9NbN4LgCq0}hOP``cnoXRvyG9z6-(C0nADHki
+z$XiR%)6Q&jJ{39U{-f-bvk4qr(O?mC??k6?7OX?Y%x<n8$V1*b=?Zus(qxOJsc80|
+zXW(o*mh<+GW=dv`n^_-~VImH8@)R05`atg(cO@~Zvu|A2V`mW+aVOWc==rb)FQ}+=
+z@+bNvx5Gv}+RZy+g;~q*NrCXyy2=!ZX|}C&cu*@@$%)LbuI6}QmXGC^d*h<Enmw*`
+zAhB*=@SAAk=T=?!SIJ`&Z~pGsWIi3B%q{5f#fh+#*bMR=6_z(`{Kg}9Cr1#RiTOdT
+zpNW;X2e2$0L$h-a52;_^(8}Lsf(YzOzAf|MmTc<C4%oyb&fLYj!ke5$RI4&|Qsa4p
+z@EcmNq^lhrVeNhkFNr#DnA_PqW6r1hN2x7L<7i{rajy;3cWch_#{E>QOp&k(X{reQ
+z0?&w$*@#zhE?D*R)EzR^fK}b=QMTHVdoAr?jKAUAzL5P<8E{W|fG*eZ&;|3D8eB)H
+zJ1yN4i)Lne(!@UGPxBe*GA`zrSLgE0J<L@CUU)`w29qoFNprxHE?Ue2;(wIm$mD3Y
+za1OjLGiKx!*wcMsWtliVG0|^BL!8C@gqBiIR%r^q%x2p)mc7TqgdYAhqZoN%w$oEW
+z7yFCXt`)J9$eZIxHBTT{s6nuTS=j4f2fC%gHf0VZx7^LPbFLQY_-{zO)AVbOdqzRC
+zb81t*!J0)K2P#N;&v5sN7_sL6c)(%afyr6yB}!Lw*Dz{ys-CpcTRa6@f=^4pa!-lI
+zv+#^QLL}+j)2tl{<LW$lCZ2$+r{6f=^Ar+PG3HDxjQZ)w#~j?OIqU0`IbNoWh34w$
+z7LHQzYE^dbWyF~an>pE>pggyM649jQQzPSlv-IXtFLxW2BC7dZJMeID76VY+N&f+q
+C3~3_(
+
+diff --git a/backend/core/tenancy/__init__.py b/backend/core/tenancy/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/core/tenancy/apps.py b/backend/core/tenancy/apps.py
+new file mode 100644
+index 0000000..f5aa71a
+--- /dev/null
++++ b/backend/core/tenancy/apps.py
+@@ -0,0 +1,7 @@
++from django.apps import AppConfig
++
++
++class TenancyConfig(AppConfig):
++    default_auto_field = 'django.db.models.BigAutoField'
++    name = 'tenancy'
++    verbose_name = 'Operações e Unidades'
+diff --git a/backend/core/tenancy/management/__init__.py b/backend/core/tenancy/management/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/core/tenancy/management/commands/__init__.py b/backend/core/tenancy/management/commands/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/core/tenancy/management/commands/onboard_operator.py b/backend/core/tenancy/management/commands/onboard_operator.py
+new file mode 100644
+index 0000000..ce9a107
+--- /dev/null
++++ b/backend/core/tenancy/management/commands/onboard_operator.py
+@@ -0,0 +1,96 @@
++"""
++Onboarding de um cliente novo.
++
++Substitui o signal `create_store_for_new_user`, que criava uma loja a cada
++usuário salvo. Agora a criação de uma operação é um ato deliberado — porque
++cada unidade entra na fatura do cliente.
++
++    python manage.py onboard_operator \\
++        --email dono@mercadinho.com \\
++        --operator "Mercadinho do Zé LTDA" \\
++        --cnpj 12345678000199 \\
++        --unit "Condomínio Vila Nova" \\
++        --mode unattended
++"""
++from django.contrib.auth import get_user_model
++from django.core.management.base import BaseCommand, CommandError
++from django.db import transaction
++from django.utils.text import slugify
++
++from inventory.models import Store
++from tenancy.models import Membership, Operator
++
++User = get_user_model()
++
++
++class Command(BaseCommand):
++    help = "Cria Operator + primeira Unit + Membership(owner) para um cliente novo."
++
++    def add_arguments(self, parser):
++        parser.add_argument('--email', required=True, help="E-mail do dono (usuário já existente)")
++        parser.add_argument('--operator', required=True, help="Nome fantasia da empresa")
++        parser.add_argument('--unit', required=True, help="Nome da primeira unidade")
++        parser.add_argument('--cnpj', default=None)
++        parser.add_argument('--legal-name', default='', help="Razão social")
++        parser.add_argument(
++            '--mode', default='unattended',
++            choices=[c[0] for c in Store.Mode.choices],
++            help="unattended = totem de condomínio; attended = balcão de bairro",
++        )
++        parser.add_argument('--trial-days', type=int, default=14)
++
++    @transaction.atomic
++    def handle(self, *args, **opts):
++        try:
++            dono = User.objects.get(email__iexact=opts['email'])
++        except User.DoesNotExist:
++            raise CommandError(
++                f"Usuário {opts['email']} não existe. "
++                "Crie primeiro com createsuperuser ou pelo cadastro."
++            )
++
++        cnpj = (opts['cnpj'] or '').replace('.', '').replace('/', '').replace('-', '') or None
++        if cnpj and Operator.objects.filter(cnpj=cnpj).exists():
++            raise CommandError(f"Já existe uma operação com o CNPJ {cnpj}.")
++
++        operador = Operator.objects.create(
++            name=opts['operator'],
++            legal_name=opts['legal_name'],
++            cnpj=cnpj,
++        )
++        operador.start_trial(dias=opts['trial_days'])
++
++        # Slug único sem depender de contador global: o id do operador já
++        # garante unicidade entre clientes diferentes com o mesmo nome de
++        # unidade ("Condomínio Vila Nova" é um nome bem comum).
++        base = slugify(opts['unit'])[:80] or 'unidade'
++        slug = f"{base}-{operador.id}"
++        sufixo = 1
++        while Store.objects.filter(slug=slug).exists():
++            sufixo += 1
++            slug = f"{base}-{operador.id}-{sufixo}"
++
++        unidade = Store.objects.create(
++            operator=operador,
++            name=opts['unit'],
++            slug=slug,
++            mode=opts['mode'],
++            owner=dono,  # ⚠️ campo legado, sai quando o OneToOne for removido
++        )
++
++        vinculo = Membership.objects.create(
++            user=dono,
++            operator=operador,
++            role=Membership.Role.OWNER,
++        )
++        # units vazio de propósito: dono enxerga todas as unidades da operação,
++        # inclusive as que ainda vão ser criadas.
++
++        self.stdout.write(self.style.SUCCESS(
++            f"\n✅ Operação criada\n"
++            f"   Operator   #{operador.id}  {operador.name}\n"
++            f"   Unit       #{unidade.id}  {unidade.name}  ({unidade.get_mode_display()})\n"
++            f"   Membership #{vinculo.id}  {dono.email} → {vinculo.get_role_display()}\n"
++            f"   Trial até  {operador.trial_ends_at:%d/%m/%Y}\n"
++            f"   Vitrine    /{unidade.slug}\n"
++        ))
+diff --git a/backend/core/tenancy/migrations/0001_initial.py b/backend/core/tenancy/migrations/0001_initial.py
+new file mode 100644
+index 0000000..8054819
+--- /dev/null
++++ b/backend/core/tenancy/migrations/0001_initial.py
+@@ -0,0 +1,88 @@
++# Generated by Django 5.2.13 on 2026-08-02 22:16
++
++import django.db.models.deletion
++from django.conf import settings
++from django.db import migrations, models
++
++
++class Migration(migrations.Migration):
++
++    initial = True
++
++    dependencies = [
++        ('inventory', '0001_initial'),
++        migrations.swappable_dependency(settings.AUTH_USER_MODEL),
++    ]
++
++    operations = [
++        migrations.CreateModel(
++            name='Operator',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('name', models.CharField(help_text='Nome fantasia', max_length=255)),
++                ('legal_name', models.CharField(blank=True, help_text='Razão social', max_length=255)),
++                ('cnpj', models.CharField(blank=True, max_length=14, null=True, unique=True)),
++                ('tax_regime', models.CharField(choices=[('simples', 'Simples Nacional'), ('presumido', 'Lucro Presumido'), ('real', 'Lucro Real'), ('mei', 'MEI')], default='simples', max_length=20)),
++                ('is_active', models.BooleanField(default=True)),
++                ('created_at', models.DateTimeField(auto_now_add=True)),
++                ('updated_at', models.DateTimeField(auto_now=True)),
++                ('plan', models.CharField(choices=[('free', 'Free'), ('pro', 'Pro')], default='free', max_length=20)),
++                ('payment_provider', models.CharField(blank=True, max_length=50, null=True)),
++                ('payment_external_id', models.CharField(blank=True, max_length=100, null=True)),
++                ('subscription_started_at', models.DateTimeField(blank=True, null=True)),
++                ('subscription_expires_at', models.DateTimeField(blank=True, null=True)),
++                ('trial_started_at', models.DateTimeField(blank=True, null=True)),
++                ('trial_ends_at', models.DateTimeField(blank=True, null=True)),
++                ('cert_a1_encrypted', models.BinaryField(blank=True, null=True)),
++                ('cert_a1_expires_at', models.DateField(blank=True, help_text='Alertar o cliente 30 dias antes: certificado vencido = loja sem emitir nota.', null=True)),
++                ('csc_id', models.CharField(blank=True, max_length=10)),
++                ('csc_token_encrypted', models.BinaryField(blank=True, null=True)),
++                ('fiscal_provider', models.CharField(default='focusnfe', help_text='Hub fiscal usado para emitir NFC-e.', max_length=20)),
++            ],
++            options={
++                'verbose_name': 'Operação',
++                'verbose_name_plural': 'Operações',
++                'ordering': ['name'],
++                'indexes': [models.Index(fields=['is_active', 'plan'], name='tenancy_ope_is_acti_58ab44_idx')],
++            },
++        ),
++        migrations.CreateModel(
++            name='Device',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('kind', models.CharField(choices=[('totem', 'Totem de autoatendimento'), ('fridge_lock', 'Trava de geladeira'), ('tablet', 'Tablet do repositor'), ('scale', 'Balança')], default='totem', max_length=20)),
++                ('name', models.CharField(blank=True, max_length=100)),
++                ('serial', models.CharField(max_length=64, unique=True)),
++                ('firmware', models.CharField(blank=True, max_length=20)),
++                ('catalog_hash', models.CharField(blank=True, max_length=64)),
++                ('last_seen', models.DateTimeField(blank=True, null=True)),
++                ('is_blocked', models.BooleanField(default=False)),
++                ('created_at', models.DateTimeField(auto_now_add=True)),
++                ('api_key', models.OneToOneField(blank=True, null=True, on_delete=django.db.models.deletion.PROTECT, related_name='device', to='inventory.apikey')),
++                ('unit', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='devices', to='inventory.store')),
++            ],
++            options={
++                'verbose_name': 'Dispositivo',
++                'verbose_name_plural': 'Dispositivos',
++                'indexes': [models.Index(fields=['unit', 'kind'], name='tenancy_dev_unit_id_d3d74c_idx'), models.Index(fields=['last_seen'], name='tenancy_dev_last_se_5623a5_idx')],
++            },
++        ),
++        migrations.CreateModel(
++            name='Membership',
++            fields=[
++                ('id', models.BigAutoField(auto_created=True, primary_key=True, serialize=False, verbose_name='ID')),
++                ('role', models.CharField(choices=[('owner', 'Proprietário'), ('manager', 'Gerente'), ('stocker', 'Repositor'), ('viewer', 'Visualizador')], default='owner', max_length=20)),
++                ('is_active', models.BooleanField(default=True)),
++                ('created_at', models.DateTimeField(auto_now_add=True)),
++                ('units', models.ManyToManyField(blank=True, help_text='Deixe vazio para dar acesso a todas as unidades da operação.', related_name='members', to='inventory.store')),
++                ('user', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='memberships', to=settings.AUTH_USER_MODEL)),
++                ('operator', models.ForeignKey(on_delete=django.db.models.deletion.CASCADE, related_name='memberships', to='tenancy.operator')),
++            ],
++            options={
++                'verbose_name': 'Vínculo',
++                'verbose_name_plural': 'Vínculos',
++                'indexes': [models.Index(fields=['user', 'is_active'], name='tenancy_mem_user_id_4a284b_idx'), models.Index(fields=['operator', 'role'], name='tenancy_mem_operato_290e8c_idx')],
++                'unique_together': {('user', 'operator')},
++            },
++        ),
++    ]
+diff --git a/backend/core/tenancy/migrations/__init__.py b/backend/core/tenancy/migrations/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/core/tenancy/models.py b/backend/core/tenancy/models.py
+new file mode 100644
+index 0000000..281f3fb
+--- /dev/null
++++ b/backend/core/tenancy/models.py
+@@ -0,0 +1,272 @@
++"""
++tenancy/models.py — a hierarquia de tenant do mercadinho.
++
++    Operator  → a empresa cliente (CNPJ, certificado fiscal, assinatura)
++      ├── Unit      → o mercadinho físico  [hoje ainda se chama inventory.Store]
++      │     └── Device → totem, trava de geladeira, tablet
++      └── Membership  → User × Operator × papel × unidades permitidas
++
++⚠️ POR QUE ISSO EXISTE
++O modelo herdado era `Store.owner = OneToOneField(User)`: um usuário, uma
++loja. Serve para consultora autônoma; não serve para mercadinho, onde uma
++empresa tem N unidades, cada unidade tem M dispositivos, e pessoas
++diferentes (dono, gerente, repositor, síndico) enxergam coisas diferentes.
++
++⚠️ RENOMEAÇÃO PENDENTE
++`inventory.Store` vira `Unit` num bloco seguinte, separado de propósito: é
++uma mudança mecânica em ~100 pontos, e misturá-la com a criação destes
++modelos tornaria impossível saber o que quebrou o quê. Até lá, leia
++"Store" como "Unit" — as FKs abaixo já apontam para o conceito certo.
++"""
++from datetime import timedelta
++
++from django.conf import settings
++from django.db import models
++from django.utils import timezone
++
++
++# ==========================================
++# 🏢 OPERATOR — a empresa cliente
++# ==========================================
++
++class Operator(models.Model):
++    """
++    Dona do CNPJ, do contrato e da assinatura.
++
++    A assinatura mora AQUI, não na unidade, por três motivos concretos:
++      • o cliente Asaas é um CNPJ — 5 unidades geram 1 cobrança, não 5;
++      • o certificado digital A1 é do CNPJ;
++      • a cobrança passa a ser por unidade ativa (base + adicional), que é
++        um modelo comercial melhor e mais fácil de explicar ao lojista.
++    """
++
++    class TaxRegime(models.TextChoices):
++        SIMPLES = 'simples', 'Simples Nacional'
++        PRESUMIDO = 'presumido', 'Lucro Presumido'
++        REAL = 'real', 'Lucro Real'
++        MEI = 'mei', 'MEI'
++
++    name = models.CharField(max_length=255, help_text="Nome fantasia")
++    legal_name = models.CharField(max_length=255, blank=True, help_text="Razão social")
++    cnpj = models.CharField(max_length=14, unique=True, null=True, blank=True)
++
++    # Define CSOSN (Simples) vs CST (Presumido/Real) na emissão da NFC-e.
++    tax_regime = models.CharField(
++        max_length=20, choices=TaxRegime.choices, default=TaxRegime.SIMPLES
++    )
++
++    is_active = models.BooleanField(default=True)
++    created_at = models.DateTimeField(auto_now_add=True)
++    updated_at = models.DateTimeField(auto_now=True)
++
++    # ── 💳 Assinatura (migrada de Store) ──────────────────────────────
++    PLAN_CHOICES = [('free', 'Free'), ('pro', 'Pro')]
++    plan = models.CharField(max_length=20, choices=PLAN_CHOICES, default='free')
++    payment_provider = models.CharField(max_length=50, blank=True, null=True)
++    payment_external_id = models.CharField(max_length=100, blank=True, null=True)
++    subscription_started_at = models.DateTimeField(blank=True, null=True)
++    subscription_expires_at = models.DateTimeField(blank=True, null=True)
++    trial_started_at = models.DateTimeField(blank=True, null=True)
++    trial_ends_at = models.DateTimeField(blank=True, null=True)
++
++    # ── 🔐 Fiscal ──────────────────────────────────────────────────────
++    # ⚠️ O certificado A1 (.pfx) NUNCA entra no repositório, nunca aparece
++    # em log e nunca sai por API. Guardado criptografado; a chave de
++    # criptografia vive em variável de ambiente, fora do banco.
++    cert_a1_encrypted = models.BinaryField(null=True, blank=True)
++    cert_a1_expires_at = models.DateField(
++        null=True, blank=True,
++        help_text="Alertar o cliente 30 dias antes: certificado vencido = loja sem emitir nota."
++    )
++    # CSC / Token IdCSC emitidos pela SEFAZ do estado, por CNPJ.
++    csc_id = models.CharField(max_length=10, blank=True)
++    csc_token_encrypted = models.BinaryField(null=True, blank=True)
++
++    fiscal_provider = models.CharField(
++        max_length=20, default='focusnfe',
++        help_text="Hub fiscal usado para emitir NFC-e."
++    )
++
++    class Meta:
++        verbose_name = 'Operação'
++        verbose_name_plural = 'Operações'
++        ordering = ['name']
++        indexes = [models.Index(fields=['is_active', 'plan'])]
++
++    def __str__(self):
++        return self.name
++
++    @property
++    def active_units_count(self):
++        return self.units.filter(is_active=True).count()
++
++    @property
++    def is_subscription_active(self):
++        agora = timezone.now()
++        if self.trial_ends_at and agora < self.trial_ends_at:
++            return True
++        return bool(self.subscription_expires_at and agora < self.subscription_expires_at)
++
++    def start_trial(self, dias=14):
++        agora = timezone.now()
++        self.trial_started_at = agora
++        self.trial_ends_at = agora + timedelta(days=dias)
++        self.save(update_fields=['trial_started_at', 'trial_ends_at'])
++
++
++# ==========================================
++# 👥 MEMBERSHIP — quem pode o quê, e onde
++# ==========================================
++
++class Membership(models.Model):
++    """
++    Substitui `Store.owner`. Um usuário pode pertencer a vários operadores,
++    e dentro de um operador pode ser restrito a um subconjunto de unidades.
++    """
++
++    class Role(models.TextChoices):
++        OWNER = 'owner', 'Proprietário'      # tudo, inclusive fiscal e membros
++        MANAGER = 'manager', 'Gerente'       # opera unidades, vê financeiro delas
++        STOCKER = 'stocker', 'Repositor'     # só estoque — não vê custo nem receita
++        VIEWER = 'viewer', 'Visualizador'    # leitura (ex.: síndico do condomínio)
++
++    user = models.ForeignKey(
++        settings.AUTH_USER_MODEL, on_delete=models.CASCADE, related_name='memberships'
++    )
++    operator = models.ForeignKey(
++        Operator, on_delete=models.CASCADE, related_name='memberships'
++    )
++    role = models.CharField(max_length=20, choices=Role.choices, default=Role.OWNER)
++
++    # Vazio = todas as unidades do operador (caso comum: dono).
++    # Preenchido = só essas (caso comum: repositor que atende 3 condomínios).
++    units = models.ManyToManyField(
++        'inventory.Store', blank=True, related_name='members',
++        help_text="Deixe vazio para dar acesso a todas as unidades da operação."
++    )
++
++    is_active = models.BooleanField(default=True)
++    created_at = models.DateTimeField(auto_now_add=True)
++
++    class Meta:
++        verbose_name = 'Vínculo'
++        verbose_name_plural = 'Vínculos'
++        unique_together = [('user', 'operator')]
++        indexes = [
++            models.Index(fields=['user', 'is_active']),
++            models.Index(fields=['operator', 'role']),
++        ]
++
++    def __str__(self):
++        return f"{self.user} @ {self.operator} ({self.get_role_display()})"
++
++    def allowed_units(self):
++        """Queryset das unidades que este vínculo enxerga."""
++        from inventory.models import Store
++
++        if not self.is_active or not self.operator.is_active:
++            return Store.objects.none()
++
++        explicitas = self.units.filter(is_active=True)
++        if explicitas.exists():
++            return explicitas
++        return self.operator.units.filter(is_active=True)
++
++    # ── Permissões por papel ───────────────────────────────────────────
++    # Isolamento por linha (queryset) diz QUAIS registros a pessoa vê.
++    # Isto diz QUAIS CAMPOS e QUAIS AÇÕES — um repositor não pode ver
++    # preço de custo, que é dado comercial do dono.
++
++    @property
++    def can_see_costs(self):
++        return self.role in (self.Role.OWNER, self.Role.MANAGER)
++
++    @property
++    def can_write_stock(self):
++        return self.role in (self.Role.OWNER, self.Role.MANAGER, self.Role.STOCKER)
++
++    @property
++    def can_see_financials(self):
++        return self.role in (self.Role.OWNER, self.Role.MANAGER)
++
++    @property
++    def can_emit_fiscal(self):
++        return self.role in (self.Role.OWNER, self.Role.MANAGER)
++
++    @property
++    def can_manage_operator(self):
++        """Membros, certificado fiscal e criação de unidade (afeta a fatura)."""
++        return self.role == self.Role.OWNER
++
++
++# ==========================================
++# 🖥️ DEVICE — o totem não é uma pessoa
++# ==========================================
++
++class Device(models.Model):
++    """
++    Totem, trava de geladeira ou tablet do repositor.
++
++    ⚠️ Um Device NÃO tem Membership. Ele autentica pela ApiKey que já existe
++    em inventory.models — não faz login com e-mail/senha e não carrega
++    refresh token de 7 dias. Isso importa porque um totem fica num corredor
++    de condomínio sem supervisão: se for roubado, você revoga uma chave sem
++    mexer em nenhum usuário.
++    """
++
++    class Kind(models.TextChoices):
++        TOTEM = 'totem', 'Totem de autoatendimento'
++        FRIDGE_LOCK = 'fridge_lock', 'Trava de geladeira'
++        TABLET = 'tablet', 'Tablet do repositor'
++        SCALE = 'scale', 'Balança'
++
++    unit = models.ForeignKey(
++        'inventory.Store', on_delete=models.CASCADE, related_name='devices'
++    )
++    kind = models.CharField(max_length=20, choices=Kind.choices, default=Kind.TOTEM)
++    name = models.CharField(max_length=100, blank=True)
++    serial = models.CharField(max_length=64, unique=True)
++
++    api_key = models.OneToOneField(
++        'inventory.ApiKey', on_delete=models.PROTECT,
++        related_name='device', null=True, blank=True
++    )
++
++    firmware = models.CharField(max_length=20, blank=True)
++
++    # Hash do catálogo que o device tem em cache local. Se divergir do
++    # servidor, o device sabe que precisa ressincronizar — sem isso, ou você
++    # baixa o catálogo inteiro toda hora, ou vende com preço desatualizado.
++    catalog_hash = models.CharField(max_length=64, blank=True)
++
++    last_seen = models.DateTimeField(null=True, blank=True)
++    is_blocked = models.BooleanField(default=False)
++    created_at = models.DateTimeField(auto_now_add=True)
++
++    HEARTBEAT_TOLERANCIA = timedelta(minutes=15)
++
++    class Meta:
++        verbose_name = 'Dispositivo'
++        verbose_name_plural = 'Dispositivos'
++        indexes = [
++            models.Index(fields=['unit', 'kind']),
++            models.Index(fields=['last_seen']),
++        ]
++
++    def __str__(self):
++        return f"{self.get_kind_display()} · {self.name or self.serial}"
++
++    @property
++    def is_online(self):
++        if not self.last_seen:
++            return False
++        return timezone.now() - self.last_seen < self.HEARTBEAT_TOLERANCIA
++
++    def touch(self, firmware=None):
++        """Registra heartbeat. Totem offline = loja parada = receita zero."""
++        self.last_seen = timezone.now()
++        campos = ['last_seen']
++        if firmware and firmware != self.firmware:
++            self.firmware = firmware
++            campos.append('firmware')
++        self.save(update_fields=campos)
+diff --git a/backend/core/tenancy/tests/__init__.py b/backend/core/tenancy/tests/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/core/tenancy/tests/test_isolation.py b/backend/core/tenancy/tests/test_isolation.py
+new file mode 100644
+index 0000000..dd65614
+--- /dev/null
++++ b/backend/core/tenancy/tests/test_isolation.py
+@@ -0,0 +1,150 @@
++"""
++Isolamento entre operações — fronteira de segurança.
++
++Isto precisa ser teste automatizado, não revisão de código. O pior incidente
++possível num SaaS multi-cliente é o mercadinho do condomínio A enxergar o
++faturamento do condomínio B, e revisão humana não pega isso de forma
++confiável quando são ~72 pontos de filtro.
++
++    python manage.py test tenancy
++"""
++from django.contrib.auth import get_user_model
++from django.test import TestCase
++from rest_framework.exceptions import NotFound, PermissionDenied
++from rest_framework.test import APIRequestFactory
++
++from inventory.models import Store
++from inventory.utils import (
++    allowed_units,
++    ensure_user_has_store,
++    get_membership,
++    resolve_unit,
++)
++from tenancy.models import Membership, Operator
++
++User = get_user_model()
++
++
++def criar_operacao(nome, email, n_unidades=1):
++    dono = User.objects.create_user(email=email, password='senha-de-teste-123')
++    operador = Operator.objects.create(name=nome)
++    unidades = [
++        Store.objects.create(
++            operator=operador, name=f"{nome} — unidade {i}", slug=f"{nome.lower()}-{i}"
++        )
++        for i in range(1, n_unidades + 1)
++    ]
++    vinculo = Membership.objects.create(
++        user=dono, operator=operador, role=Membership.Role.OWNER
++    )
++    return dono, operador, unidades, vinculo
++
++
++class IsolamentoEntreOperacoes(TestCase):
++    def setUp(self):
++        self.factory = APIRequestFactory()
++        self.dono_a, self.op_a, self.unidades_a, _ = criar_operacao('Alfa', 'a@teste.com', 2)
++        self.dono_b, self.op_b, self.unidades_b, _ = criar_operacao('Beta', 'b@teste.com', 1)
++
++    def _req(self, user, unit_id=None):
++        headers = {'HTTP_X_UNIT_ID': str(unit_id)} if unit_id else {}
++        req = self.factory.get('/', **headers)
++        req.user = user
++        return req
++
++    def test_dono_ve_apenas_as_proprias_unidades(self):
++        visiveis = set(allowed_units(self.dono_a).values_list('id', flat=True))
++        self.assertEqual(visiveis, {u.id for u in self.unidades_a})
++        self.assertNotIn(self.unidades_b[0].id, visiveis)
++
++    def test_unidade_alheia_no_header_devolve_404_e_nao_403(self):
++        # 403 confirmaria que a unidade existe. Para quem sonda IDs, ela
++        # simplesmente não existe.
++        with self.assertRaises(NotFound):
++            resolve_unit(self._req(self.dono_a, self.unidades_b[0].id))
++
++    def test_header_valido_troca_a_unidade_ativa(self):
++        segunda = self.unidades_a[1]
++        self.assertEqual(resolve_unit(self._req(self.dono_a, segunda.id)).id, segunda.id)
++
++    def test_sem_header_cai_na_primeira_unidade(self):
++        self.assertEqual(resolve_unit(self._req(self.dono_a)).id, self.unidades_a[0].id)
++
++
++class AcessoNegadoPorPadrao(TestCase):
++    """
++    A regressão mais importante deste refactor.
++
++    A implementação antiga CRIAVA uma loja quando o usuário não tinha
++    nenhuma. Um usuário sem permissão recebia um tenant novo em vez de 403.
++    """
++
++    def test_usuario_sem_vinculo_e_barrado_e_nada_e_criado(self):
++        orfao = User.objects.create_user(email='orfao@teste.com', password='senha-123456')
++        antes = Store.objects.count()
++
++        with self.assertRaises(PermissionDenied):
++            get_membership(orfao)
++        with self.assertRaises(PermissionDenied):
++            ensure_user_has_store(orfao)
++
++        self.assertEqual(Store.objects.count(), antes, "não pode criar unidade sozinho")
++
++    def test_vinculo_desativado_perde_acesso_na_hora(self):
++        dono, operador, _, vinculo = criar_operacao('Gama', 'g@teste.com')
++        vinculo.is_active = False
++        vinculo.save(update_fields=['is_active'])
++
++        with self.assertRaises(PermissionDenied):
++            allowed_units(dono)
++
++    def test_operacao_inativa_bloqueia_todo_mundo(self):
++        dono, operador, _, _ = criar_operacao('Delta', 'd@teste.com')
++        operador.is_active = False
++        operador.save(update_fields=['is_active'])
++
++        with self.assertRaises(PermissionDenied):
++            allowed_units(dono)
++
++
++class RestricaoPorUnidade(TestCase):
++    """Repositor que atende só 2 das 3 unidades da operação."""
++
++    def test_stocker_restrito_nao_ve_a_terceira_unidade(self):
++        _, operador, unidades, _ = criar_operacao('Epsilon', 'e@teste.com', 3)
++        repositor = User.objects.create_user(email='rep@teste.com', password='senha-123456')
++
++        vinculo = Membership.objects.create(
++            user=repositor, operator=operador, role=Membership.Role.STOCKER
++        )
++        vinculo.units.set(unidades[:2])
++
++        visiveis = set(allowed_units(repositor).values_list('id', flat=True))
++        self.assertEqual(visiveis, {unidades[0].id, unidades[1].id})
++        self.assertNotIn(unidades[2].id, visiveis)
++
++    def test_papeis_definem_o_que_cada_um_enxerga(self):
++        _, operador, _, _ = criar_operacao('Zeta', 'z@teste.com')
++
++        def vinculo_com(papel, email):
++            u = User.objects.create_user(email=email, password='senha-123456')
++            return Membership.objects.create(user=u, operator=operador, role=papel)
++
++        dono = vinculo_com(Membership.Role.OWNER, 'o@teste.com')
++        gerente = vinculo_com(Membership.Role.MANAGER, 'm@teste.com')
++        repositor = vinculo_com(Membership.Role.STOCKER, 's@teste.com')
++        sindico = vinculo_com(Membership.Role.VIEWER, 'v@teste.com')
++
++        # Custo é dado comercial do dono — repositor e síndico não veem.
++        self.assertTrue(dono.can_see_costs)
++        self.assertTrue(gerente.can_see_costs)
++        self.assertFalse(repositor.can_see_costs)
++        self.assertFalse(sindico.can_see_costs)
++
++        # Síndico é leitura pura; repositor movimenta estoque.
++        self.assertTrue(repositor.can_write_stock)
++        self.assertFalse(sindico.can_write_stock)
++
++        # Certificado fiscal e criação de unidade (afeta a fatura): só o dono.
++        self.assertTrue(dono.can_manage_operator)
++        self.assertFalse(gerente.can_manage_operator)
+diff --git a/docker-compose.dev.yml b/docker-compose.dev.yml
+new file mode 100644
+index 0000000..229b702
+--- /dev/null
++++ b/docker-compose.dev.yml
+@@ -0,0 +1,44 @@
++# docker-compose.dev.yml — banco e cache locais, iguais aos de produção.
++#
++#   docker compose -f docker-compose.dev.yml up -d
++#   docker compose -f docker-compose.dev.yml down          (mantém os dados)
++#   docker compose -f docker-compose.dev.yml down -v       (apaga os dados)
++#
++# ⚠️ Só desenvolvimento. Senha fraca de propósito — nada aqui vai pra produção.
++
++services:
++  db:
++    # Fixe a MESMA major version do Supabase. Divergência de major entre
++    # dev e prod devolve o problema que este arquivo existe para evitar.
++    image: postgres:17-alpine
++    container_name: mercadinho-db
++    environment:
++      POSTGRES_DB: mercadinho
++      POSTGRES_USER: mercadinho
++      POSTGRES_PASSWORD: dev-local-only
++      # Collation determinística: sem isto, ordenação e comparação de texto
++      # podem divergir entre a sua máquina e o servidor.
++      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
++    ports:
++      - "5432:5432"
++    volumes:
++      - pgdata:/var/lib/postgresql/data
++    healthcheck:
++      test: ["CMD-SHELL", "pg_isready -U mercadinho -d mercadinho"]
++      interval: 5s
++      timeout: 3s
++      retries: 10
++
++  redis:
++    # O projeto já traz django-redis e redis no requirements, mas o settings
++    # ainda usa LocMemCache. LocMem é por PROCESSO: com mais de um worker,
++    # rate limit e locks de idempotência param de funcionar entre eles — e
++    # falham em silêncio. Suba o Redis agora e configure antes de escalar.
++    image: redis:7-alpine
++    container_name: mercadinho-redis
++    ports:
++      - "6379:6379"
++    command: redis-server --save "" --appendonly no
++
++volumes:
++  pgdata:

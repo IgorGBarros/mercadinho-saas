@@ -1,116 +1,115 @@
 # backend/core/inventory/utils.py
 """
-Utilitários para gerenciamento de lojas (Store) e segurança tenant-aware.
+Resolução de tenant — PONTO ÚNICO DE VERDADE.
+
+⚠️ LEIA ANTES DE EDITAR
+Existiam duas implementações concorrentes de `get_current_store` e
+`ensure_user_has_store`: uma aqui e outra definida direto em views.py.
+Como a definição local de views.py vinha DEPOIS do `from .utils import ...`,
+ela sobrescrevia o nome importado — na prática, quase todo o views.py usava
+a versão local e este arquivo era ignorado. Quem editasse aqui não via
+efeito nenhum. As definições locais foram removidas; este arquivo voltou a
+ser o único lugar onde a resolução de tenant acontece.
+
+⚠️ MUDANÇA DE COMPORTAMENTO DELIBERADA
+A versão antiga CRIAVA uma loja quando o usuário não tinha nenhuma. Num
+SaaS de auto-cadastro isso é conveniente; num sistema B2B multi-cliente é
+falha de isolamento — um usuário sem permissão ganhava um tenant novo em
+vez de tomar 403. Agora: sem vínculo, sem acesso.
 """
 import logging
-from django.utils.text import slugify
+
 from django.core.exceptions import ValidationError
+from django.utils.text import slugify
+from rest_framework.exceptions import NotFound, PermissionDenied
+
 from .models import Store
 
-# Configurar logger
 logger = logging.getLogger(__name__)
+
+# Header que o frontend envia quando o usuário troca de unidade no seletor.
+UNIT_HEADER = 'X-Unit-Id'
+
+
+def get_membership(user):
+    """
+    Vínculo ativo do usuário. Não cria nada.
+
+    Raises:
+        PermissionDenied: usuário sem vínculo ativo com nenhuma operação.
+    """
+    from tenancy.models import Membership
+
+    if not user or not user.is_authenticated:
+        raise PermissionDenied("Autenticação obrigatória.")
+
+    vinculo = (
+        Membership.objects
+        .filter(user=user, is_active=True, operator__is_active=True)
+        .select_related('operator')
+        .first()
+    )
+    if not vinculo:
+        logger.warning("Usuário %s sem vínculo ativo — acesso negado.", user.pk)
+        raise PermissionDenied("Usuário sem vínculo com nenhuma operação.")
+    return vinculo
+
+
+def allowed_units(user):
+    """Queryset das unidades que este usuário pode enxergar."""
+    return get_membership(user).allowed_units()
+
+
+def resolve_unit(request):
+    """
+    A unidade ativa desta requisição.
+
+    Origem: header X-Unit-Id. Sem header, cai na primeira unidade permitida
+    — que cobre o caso mais comum (cliente com uma unidade só) e mantém a
+    UX idêntica à de hoje.
+    """
+    permitidas = allowed_units(request.user)
+    unit_id = request.headers.get(UNIT_HEADER)
+
+    if unit_id:
+        unidade = permitidas.filter(pk=unit_id).first()
+        if not unidade:
+            # 404 e não 403: negar com "acesso negado" confirmaria que a
+            # unidade existe. Para quem sonda IDs alheios, ela não existe.
+            raise NotFound("Unidade não encontrada.")
+        return unidade
+
+    unidade = permitidas.order_by('id').first()
+    if not unidade:
+        raise PermissionDenied("Nenhuma unidade disponível para este usuário.")
+    return unidade
 
 
 def get_current_store(user):
     """
-    Obtém ou cria a loja do usuário atual de forma robusta.
-    
-    Esta função implementa o padrão tenant-aware onde cada usuário
-    tem exatamente uma Store associada.
-    
-    Args:
-        user: Instância do modelo User (CustomUser ou User padrão)
-        
-    Returns:
-        Store: Instância da loja do usuário
-        
-    Raises:
-        ValidationError: Se houver erro na criação da loja
-        Exception: Para outros erros inesperados
+    ⚠️ DEPRECIADO — use resolve_unit(request).
+
+    Mantido porque 32 pontos de views.py ainda chamam pelo nome antigo.
+    Devolve a primeira unidade permitida, ignorando o header de seleção:
+    a unidade ativa é uma propriedade da REQUISIÇÃO, não do usuário, e não
+    dá para descobri-la só com `user`.
     """
-    if not user or not user.is_authenticated:
-        logger.warning("Tentativa de obter loja para usuário não autenticado")
-        raise ValidationError("Usuário deve estar autenticado")
-    
-    try:
-        # ✅ PRIMEIRO: Tentar buscar loja existente
-        logger.debug(f"Buscando loja para usuário {user.id} ({user.email})")
-        
-        # Usar relacionamento OneToOne definido no modelo
-        if hasattr(user, 'store') and user.store:
-            logger.debug(f"✅ Loja encontrada: {user.store.slug}")
-            return user.store
-        
-        # ✅ FALLBACK: Buscar por query direta (caso relacionamento não funcione)
-        store = Store.objects.filter(owner=user).first()
-        if store:
-            logger.debug(f"✅ Loja encontrada via query: {store.slug}")
-            return store
-            
-    except Exception as e:
-        logger.warning(f"Erro ao buscar loja existente: {e}")
-        # Continuar para criação automática
-    
-    # ✅ SEGUNDO: Criar nova loja automaticamente
-    try:
-        logger.info(f"Criando nova loja para usuário {user.id}")
-        
-        # Gerar nome da loja baseado no usuário
-        user_name = getattr(user, 'name', None) or getattr(user, 'first_name', None)
-        if user_name:
-            store_name = f'Loja {user_name.title()}'
-        else:
-            # Usar parte do email como fallback
-            email_prefix = user.email.split('@')[0]
-            store_name = f'Loja {email_prefix.title()}'
-        
-        # Gerar slug único
-        base_slug = slugify(user.email.split('@')[0])
-        unique_slug = base_slug
-        
-        # ✅ GARANTIR SLUG ÚNICO
-        counter = 1
-        while Store.objects.filter(slug=unique_slug).exists():
-            unique_slug = f"{base_slug}-{counter}"
-            counter += 1
-            
-            # Evitar loop infinito
-            if counter > 1000:
-                unique_slug = f"{base_slug}-{user.id}"
-                break
-        
-        # ✅ CRIAR LOJA COM CONFIGURAÇÕES PADRÃO
-        store = Store.objects.create(
-            owner=user,  # ✅ Usar 'owner' conforme seu modelo
-            name=store_name,
-            slug=unique_slug,
-            plan='free',  # ✅ Plano padrão
-            # Campos opcionais com valores padrão
-            whatsapp=getattr(user, 'phone', None),  # Se existir campo phone
-        )
-        
-        logger.info(f"✅ Loja criada com sucesso: {store.slug} para usuário {user.email}")
-        return store
-        
-    except ValidationError as e:
-        logger.error(f"❌ Erro de validação ao criar loja: {e}")
-        raise
-    except Exception as e:
-        logger.error(f"❌ Erro inesperado ao criar loja para usuário {user.id}: {e}")
-        raise ValidationError(f"Não foi possível criar loja: {str(e)}")
+    return allowed_units(user).order_by('id').first()
 
 
 def ensure_user_has_store(user):
-    """
-    Alias para get_current_store para compatibilidade com código existente.
-    
-    Args:
-        user: Instância do modelo User
-        
-    Returns:
-        Store: Instância da loja do usuário
-    """
-    return get_current_store(user)
+    """⚠️ DEPRECIADO — use resolve_unit(request). Ver get_current_store."""
+    unidade = get_current_store(user)
+    if not unidade:
+        raise PermissionDenied("Nenhuma unidade disponível para este usuário.")
+    return unidade
+
+
+def user_can_access_unit(user, unit) -> bool:
+    """Checagem pontual, para código que já tem a unidade em mãos."""
+    if not unit:
+        return False
+    return allowed_units(user).filter(pk=unit.pk).exists()
 
 
 def validate_store_ownership(user, store):

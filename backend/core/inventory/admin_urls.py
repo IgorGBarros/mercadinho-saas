@@ -17,8 +17,6 @@ from .admin_views import (
     admin_impersonate_user,
     admin_toggle_block_user,
     list_plan_configs,
-    list_api_plan_configs,
-    update_api_plan_config,
     update_plan_config,
     list_promotions,
     update_system_config,
@@ -28,8 +26,6 @@ from .admin_views import (
     get_system_stats,
     get_product_analytics,
     get_store_behavior_analytics,
-    get_ai_training_summary,
-    monitor_api_usage,
     update_plan,
     update_subscription,
 )
@@ -43,14 +39,11 @@ urlpatterns = [
     # Visão geral / configuração
     path('stats/', get_system_stats, name='admin_system_stats'),
     path('plan-configs/', list_plan_configs, name='admin_plan_configs'),
-    path('api-plan-configs/', list_api_plan_configs, name='admin_api_plan_configs'),
-    path('api-plan-configs/<str:plan_type>/', update_api_plan_config, name='admin_update_api_plan_config'),
     path('plan-configs/<str:plan_type>/', update_plan_config, name='admin_update_plan_config'),
     path('promotions/', list_promotions, name='admin_promotions'),
     path('system-config/', update_system_config, name='admin_system_config'),
     path('promotions/create/', create_promotion, name='admin_promotion_create'),
     path('promotions/<uuid:promotion_id>/', promotion_detail, name='admin_promotion_detail'),
-    path('api-monitor/', monitor_api_usage, name='admin_api_monitor'),
 
     # Analytics (filtrado por consentimento LGPD — ver admin_views.py)
     # 📊 Saúde de todas as consultoras (indicadores de gestão)
@@ -61,5 +54,4 @@ urlpatterns = [
     path('users/<int:user_id>/toggle-block/', admin_toggle_block_user, name='admin_toggle_block'),
     path('analytics/products/', get_product_analytics, name='admin_product_analytics'),
     path('analytics/behavior/', get_store_behavior_analytics, name='admin_behavior_analytics'),
-    path('ai-training/summary/', get_ai_training_summary, name='admin_ai_training_summary'),
 ]

@@ -1,0 +1,44 @@
+# docker-compose.dev.yml — banco e cache locais, iguais aos de produção.
+#
+#   docker compose -f docker-compose.dev.yml up -d
+#   docker compose -f docker-compose.dev.yml down          (mantém os dados)
+#   docker compose -f docker-compose.dev.yml down -v       (apaga os dados)
+#
+# ⚠️ Só desenvolvimento. Senha fraca de propósito — nada aqui vai pra produção.
+
+services:
+  db:
+    # Fixe a MESMA major version do Supabase. Divergência de major entre
+    # dev e prod devolve o problema que este arquivo existe para evitar.
+    image: postgres:17-alpine
+    container_name: mercadinho-db
+    environment:
+      POSTGRES_DB: mercadinho
+      POSTGRES_USER: mercadinho
+      POSTGRES_PASSWORD: dev-local-only
+      # Collation determinística: sem isto, ordenação e comparação de texto
+      # podem divergir entre a sua máquina e o servidor.
+      POSTGRES_INITDB_ARGS: "--locale=C --encoding=UTF8"
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U mercadinho -d mercadinho"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  redis:
+    # O projeto já traz django-redis e redis no requirements, mas o settings
+    # ainda usa LocMemCache. LocMem é por PROCESSO: com mais de um worker,
+    # rate limit e locks de idempotência param de funcionar entre eles — e
+    # falham em silêncio. Suba o Redis agora e configure antes de escalar.
+    image: redis:7-alpine
+    container_name: mercadinho-redis
+    ports:
+      - "6380:6379"
+    command: redis-server --save "" --appendonly no
+
+volumes:
+  pgdata:

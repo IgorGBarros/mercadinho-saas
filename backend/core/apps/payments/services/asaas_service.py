@@ -219,50 +219,23 @@ class AsaasService:
     # ─── WEBHOOK PROCESSING ──────────────────────────────
 
     def process_webhook(self, event: str, payload: dict) -> dict:
-        # ⚠️ Fase 4: o MESMO endpoint de webhook agora processa dois
-        # produtos diferentes — assinatura PRO de consultora e assinatura
-        # de API de desenvolvedor. externalReference é o que desambigua:
-        # 'dev_<uuid>' pra desenvolvedor, um ID de Store (inteiro) pro
-        # caminho de sempre. O prefixo é explícito de propósito — não dá
-        # pra confiar só no FORMATO (Store.id é inteiro, DeveloperAccount.id
-        # é UUID) porque isso é implícito e frágil.
-        #
-        # PAYMENT_CONFIRMED/RECEIVED/OVERDUE trazem o externalReference em
-        # payload['payment']; SUBSCRIPTION_CANCELED traz em
-        # payload['subscription'] — formatos diferentes do Asaas pro mesmo
-        # conceito, então checa os dois.
-        external_ref = str(
-            (payload.get('payment') or {}).get('externalReference')
-            or (payload.get('subscription') or {}).get('externalReference')
-            or ''
-        )
-        eh_desenvolvedor = external_ref.startswith('dev_')
-
-        if eh_desenvolvedor:
-            handlers = {
-                'PAYMENT_CONFIRMED': self._on_developer_payment_received,
-                'PAYMENT_RECEIVED': self._on_developer_payment_received,
-                'PAYMENT_OVERDUE': self._on_developer_payment_overdue,
-                'SUBSCRIPTION_CANCELED': self._on_developer_subscription_canceled,
-            }
-        else:
-            handlers = {
-                # ⚠️ PAYMENT_CONFIRMED é essencial: no cartão de crédito o Asaas
-                # só envia PAYMENT_RECEIVED ~32 dias depois (quando o dinheiro é
-                # liberado). Tratando apenas RECEIVED, quem pagasse no cartão
-                # esperaria um mês pelo PRO. CONFIRMED significa "pagamento
-                # efetuado" — é nele que liberamos o acesso.
-                'PAYMENT_CONFIRMED': self._on_payment_received,
-                'PAYMENT_RECEIVED': self._on_payment_received,
-                'PAYMENT_OVERDUE': self._on_payment_overdue,
-                'SUBSCRIPTION_CANCELED': self._on_subscription_canceled,
-            }
+        handlers = {
+            # ⚠️ PAYMENT_CONFIRMED é essencial: no cartão de crédito o Asaas
+            # só envia PAYMENT_RECEIVED ~32 dias depois (quando o dinheiro é
+            # liberado). Tratando apenas RECEIVED, quem pagasse no cartão
+            # esperaria um mês pelo acesso. CONFIRMED significa "pagamento
+            # efetuado" — é nele que liberamos.
+            'PAYMENT_CONFIRMED': self._on_payment_received,
+            'PAYMENT_RECEIVED': self._on_payment_received,
+            'PAYMENT_OVERDUE': self._on_payment_overdue,
+            'SUBSCRIPTION_CANCELED': self._on_subscription_canceled,
+        }
 
         handler = handlers.get(event)
         if not handler:
             return {'status': 'ignored', 'event': event}
 
-        logger.info(f"[ASAAS WEBHOOK] Processando: {event} ({'desenvolvedor' if eh_desenvolvedor else 'consultora'})")
+        logger.info(f"[ASAAS WEBHOOK] Processando: {event}")
         return handler(payload, event=event)
 
     def _find_store_from_payload(self, payload: dict):
@@ -407,180 +380,6 @@ class AsaasService:
             return {'status': 'success', 'store_id': str(store.id)}
         except Store.DoesNotExist:
             return {'status': 'error', 'message': 'Store not found'}
-
-    # ─────────────────────────────────────────────────────────────
-    # 💰 ASSINATURA DE API (Fase 4) — mesmo Asaas, produto diferente
-    # ─────────────────────────────────────────────────────────────
-
-    def create_developer_payment_link(self, developer, plan_type: str, billing_cycle: str = 'monthly') -> dict:
-        """
-        Cria o link de checkout pra um desenvolvedor assinar um plano de
-        API pago. Mesmo padrão do create_payment_link (consultora) — sem
-        criar "customer", sem coletar CPF/CNPJ aqui.
-        """
-        from apps.developers.models import ApiPlanConfig
-
-        plano = ApiPlanConfig.objects.filter(plan_type=plan_type, is_visible=True).first()
-        if not plano:
-            raise AsaasAPIError(f"Plano de API '{plan_type}' não encontrado ou não disponível.")
-
-        value = float(plano.yearly_price if billing_cycle == 'yearly' else plano.monthly_price)
-        if value <= 0:
-            raise AsaasAPIError(f"Plano '{plan_type}' ainda não tem preço configurado.")
-
-        cycle_label = "Mensal" if billing_cycle == "monthly" else "Anual"
-        link_data = {
-            'name': f'Minha Amora API — {plano.display_name} ({cycle_label})',
-            'description': f'Assinatura de API para {developer.email}',
-            'endDate': (timezone.now() + timedelta(days=7)).strftime('%Y-%m-%d'),
-            'value': value,
-            'billingType': 'UNDEFINED',
-            'chargeType': 'RECURRENT',
-            'dueDateLimitDays': 5,
-            'subscriptionCycle': 'MONTHLY' if billing_cycle == 'monthly' else 'YEARLY',
-            'notificationEnabled': True,
-            # ⚠️ O prefixo 'dev_' é o que faz o webhook desviar pro caminho
-            # de desenvolvedor em vez de tentar achar uma Store com este ID
-            # (que nunca existiria, já que developer.id é UUID).
-            'externalReference': f'dev_{developer.id}',
-        }
-
-        result = self._request('POST', 'paymentLinks', data=link_data)
-
-        link_id = result.get('id')
-        if link_id:
-            from apps.developers.models import ApiSubscription
-            sub, _ = ApiSubscription.objects.get_or_create(developer=developer, defaults={'plan': plano})
-            sub.payment_external_id = link_id
-            sub.save(update_fields=['payment_external_id'])
-
-        logger.info(f"[ASAAS] Payment link (API): {result.get('url')}")
-        return result
-
-    def _match_developer_plan(self, paid_value):
-        """
-        Descobre qual ApiPlanConfig foi pago comparando o valor recebido
-        com mensal/anual de cada plano configurado — mesma lógica de
-        _days_for_payment, mas escolhendo o PLANO (não só mensal/anual do
-        único plano PRO que a consultora tem).
-        """
-        from apps.developers.models import ApiPlanConfig
-
-        if paid_value is None:
-            return None, 30
-        valor = float(paid_value)
-
-        melhor_plano, melhor_dias, menor_diff = None, 30, None
-        for plano in ApiPlanConfig.objects.all():
-            for preco, dias in [(float(plano.monthly_price), 30), (float(plano.yearly_price), 365)]:
-                if preco <= 0:
-                    continue
-                diff = abs(valor - preco)
-                if menor_diff is None or diff < menor_diff:
-                    menor_diff, melhor_plano, melhor_dias = diff, plano, dias
-
-        # Tolerância pequena: só casa se o valor bateu razoavelmente perto
-        # de algum preço configurado, não só "o mais próximo entre todos"
-        # mesmo que a diferença seja enorme (evita casar um valor
-        # aleatório com o plano mais barato só por ser o "menos errado").
-        if melhor_plano and menor_diff is not None and menor_diff < 5:
-            return melhor_plano, melhor_dias
-        return None, 30
-
-    def _on_developer_payment_received(self, payload: dict, event: str = '') -> dict:
-        from apps.developers.models import DeveloperAccount, ApiSubscription
-        from inventory.models import ProcessedPaymentEvent
-
-        payment = payload.get('payment', {}) or {}
-        external_ref = str(payment.get('externalReference') or '')
-        dev_id = external_ref[len('dev_'):]
-
-        try:
-            dev = DeveloperAccount.objects.get(id=dev_id)
-        except (DeveloperAccount.DoesNotExist, ValueError, TypeError):
-            logger.warning(f"[ASAAS WEBHOOK] Desenvolvedor não encontrado: {external_ref}")
-            return {'status': 'error', 'message': 'Developer not found'}
-
-        # Mesma idempotência de sempre — reentrega ou CONFIRMED+RECEIVED da
-        # mesma cobrança não processa duas vezes.
-        payment_id = payment.get('id')
-        if payment_id and ProcessedPaymentEvent.objects.filter(payment_id=payment_id).exists():
-            logger.info(f"[ASAAS WEBHOOK] Cobrança {payment_id} já processada — ignorando")
-            return {'status': 'duplicate', 'payment_id': payment_id, 'developer_id': str(dev.id)}
-
-        plano, dias = self._match_developer_plan(payment.get('value'))
-        if not plano:
-            logger.warning(f"[ASAAS WEBHOOK] Nenhum plano de API bate com o valor {payment.get('value')}")
-            return {'status': 'error', 'message': 'No matching plan for paid value'}
-
-        now = timezone.now()
-        sub, _ = ApiSubscription.objects.get_or_create(developer=dev, defaults={'plan': plano})
-        current_expiry = sub.expires_at
-        base = current_expiry if (current_expiry and current_expiry > now) else now
-        sub.plan = plano
-        if not sub.started_at:
-            sub.started_at = now
-        sub.expires_at = base + timedelta(days=dias)
-        sub.save()
-
-        # ⚠️ Decisão de design (revisada com o Igor antes de implementar):
-        # atualiza a chave EXISTENTE do desenvolvedor em vez de emitir uma
-        # nova — ele não precisa trocar a chave numa integração já em
-        # produção só porque virou assinante pago.
-        chave = dev.api_keys.filter(is_active=True).order_by('-created_at').first()
-        if chave:
-            chave.plan = plano.plan_type
-            chave.monthly_quota = plano.monthly_quota
-            chave.rate_limit = plano.rate_limit
-            chave.save(update_fields=['plan', 'monthly_quota', 'rate_limit'])
-
-        if payment_id:
-            try:
-                ProcessedPaymentEvent.objects.create(
-                    payment_id=payment_id, developer=dev,
-                    event=event or '', days_granted=dias,
-                    value=payment.get('value'), billing_type=payment.get('billingType') or '',
-                )
-            except Exception as e:
-                logger.warning(f"[ASAAS WEBHOOK] Não registrou idempotência de {payment_id}: {e}")
-
-        logger.info(f"[ASAAS WEBHOOK] Developer {dev.id} → {plano.plan_type} por {dias} dias (até {sub.expires_at})")
-        return {'status': 'success', 'developer_id': str(dev.id), 'plan': plano.plan_type, 'days_granted': dias}
-
-    def _on_developer_payment_overdue(self, payload: dict, event: str = '') -> dict:
-        payment = payload.get('payment', {}) or {}
-        external_ref = str(payment.get('externalReference') or '')
-        logger.warning(f"[ASAAS WEBHOOK] Pagamento de API atrasado: {external_ref}")
-        return {'status': 'warning'}
-
-    def _on_developer_subscription_canceled(self, payload: dict, event: str = '') -> dict:
-        from apps.developers.models import DeveloperAccount, ApiPlanConfig
-
-        subscription = payload.get('subscription', {}) or {}
-        external_ref = str(subscription.get('externalReference') or '')
-        dev_id = external_ref[len('dev_'):]
-
-        try:
-            dev = DeveloperAccount.objects.get(id=dev_id)
-        except (DeveloperAccount.DoesNotExist, ValueError, TypeError):
-            return {'status': 'error', 'message': 'Developer not found'}
-
-        # Volta pro starter (gratuito) — mesma ideia de Store voltando pro
-        # free quando a assinatura da consultora é cancelada.
-        starter = ApiPlanConfig.objects.filter(plan_type='starter').first()
-        if hasattr(dev, 'subscription'):
-            dev.subscription.expires_at = timezone.now()
-            dev.subscription.save(update_fields=['expires_at'])
-
-        chave = dev.api_keys.filter(is_active=True).order_by('-created_at').first()
-        if chave and starter:
-            chave.plan = 'starter'
-            chave.monthly_quota = starter.monthly_quota
-            chave.rate_limit = starter.rate_limit
-            chave.save(update_fields=['plan', 'monthly_quota', 'rate_limit'])
-
-        logger.info(f"[ASAAS WEBHOOK] Developer {dev.id} → assinatura de API cancelada, voltou pro starter")
-        return {'status': 'success', 'developer_id': str(dev.id)}
 
 
 asaas_service = AsaasService()

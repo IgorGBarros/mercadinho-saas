@@ -151,14 +151,54 @@ class CrawlerLog(models.Model):
 # ==========================================
 
 class Store(models.Model):
-    """Loja/Perfil da consultora"""
-    name = models.CharField(max_length=255, default='Minha Loja Natura')
+    """
+    A unidade física — um mercadinho.
+
+    ⚠️ SERÁ RENOMEADO PARA `Unit`. O nome antigo ficou porque a renomeação
+    toca ~100 pontos (72 filtros `store=` em views.py, 8 FKs, serializers)
+    e foi separada em um bloco próprio, para que um erro de renomeação não
+    se confunda com um erro de modelagem.
+    """
+
+    class Mode(models.TextChoices):
+        UNATTENDED = 'unattended', 'Autônomo (totem)'
+        ATTENDED = 'attended', 'Atendido (balcão)'
+        HYBRID = 'hybrid', 'Híbrido'
+
+    # 🏢 A empresa dona desta unidade.
+    operator = models.ForeignKey(
+        'tenancy.Operator', on_delete=models.PROTECT, related_name='units',
+        null=True, blank=True,
+        help_text="Temporariamente nulo até o onboarding novo existir."
+    )
+
+    name = models.CharField(max_length=255, default='Minha Unidade')
     slug = models.SlugField(unique=True, blank=True, max_length=120)
     whatsapp = models.CharField(max_length=20, blank=True, null=True)
+    is_active = models.BooleanField(default=True)
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
-    
-    # Relacionamento com usuário
+
+    # 🔀 Um campo agora evita um fork do produto depois. Mercadinho autônomo
+    # de condomínio e mercearia de bairro compartilham ~80% do backend; o
+    # que muda é a frente de venda. Caixa/turno, fiado e balança ficam atrás
+    # deste flag e viram feature gate de plano.
+    mode = models.CharField(
+        max_length=20, choices=Mode.choices, default=Mode.UNATTENDED
+    )
+
+    # 🏢 Específicos de mercadinho em condomínio
+    address = models.CharField(max_length=255, blank=True)
+    condo_name = models.CharField(max_length=255, blank=True)
+    opening_hours = models.JSONField(
+        default=dict, blank=True, help_text="Vazio = 24h (caso do totem)."
+    )
+
+    # ⚠️ MANTIDO POR COMPATIBILIDADE, EM VIAS DE REMOÇÃO.
+    # Este OneToOne é exatamente a limitação que o Membership resolve: ele
+    # impede que uma empresa tenha várias unidades e que várias pessoas
+    # tenham papéis distintos. Sai quando as 32 chamadas a
+    # ensure_user_has_store estiverem migradas para resolve_unit(request).
     owner = models.OneToOneField(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
@@ -902,10 +942,8 @@ class ApiKey(models.Model):
         blank=True,
         help_text="Loja associada (para consultoras)"
     )
-    # ⚠️ Adicionado junto com a fundação do produto de API (apps/developers):
-    # chave emitida pra um desenvolvedor de verdade, não uma loja disfarçada
-    # de "cliente de API" — antes o admin-panel simulava chaves a partir de
-    # lojas com vitrine ativa, sem nenhuma chave real ter sido emitida.
+    # 🔜 MERCADINHO: esta chave passa a identificar um DEVICE (totem, trava
+    # de geladeira, tablet do repositor) — ver app `devices`.
    
     
     plan = models.CharField(max_length=20, choices=PLAN_CHOICES, default='starter')
@@ -1113,8 +1151,7 @@ class ProcessedPaymentEvent(models.Model):
         ordering = ['-processed_at']
 
     def __str__(self):
-        alvo = f"loja {self.store_id}" if self.store_id else f"dev {self.developer_id}"
-        return f"{self.payment_id} → {alvo} (+{self.days_granted}d)"
+        return f"{self.payment_id} → loja {self.store_id} (+{self.days_granted}d)"
 
 # ==========================================
 # 📇 CRM DA VITRINE (leads e carrinhos)

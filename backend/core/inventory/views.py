@@ -165,7 +165,6 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from firebase_admin import auth as firebase_auth
 
 from .models import CustomUser
-from .utils import ensure_user_has_store
 from .firebase_utils import init_firebase_safe
 
 logger = logging.getLogger(__name__)
@@ -297,127 +296,53 @@ from .serializers import (
 # 0. HELPERS & MIXINS MULTI-TENANT
 # ==========================================
 
-def get_current_store(user):
-    """
-    ✅ Versão atualizada com fallback e logs de auditoria
-    """
-    try:
-        # Log de segurança (anonimizado se necessário)
-        print(f"🔍 get_current_store: Usuário {user.id if user else 'Anon'}")
-        
-        if not user or not user.id:
-            print("❌ Usuário inválido ou sem ID")
-            return None
-        
-        # Estratégia 1: Buscar por relacionamento owner
-        try:
-            store = Store.objects.filter(owner=user).first()
-            if store:
-                print(f"✅ Loja encontrada (owner): {store.id}")
-                return store
-        except Exception as e:
-            print(f"⚠️ Erro busca owner: {e}")
-        
-        # Estratégia 2: Buscar por owner_id direto
-        try:
-            stores = Store.objects.filter(owner_id=user.id)
-            if stores.exists():
-                store = stores.first()
-                print(f"✅ Loja encontrada (owner_id): {store.id}")
-                return store
-        except Exception as e:
-            print(f"⚠️ Erro busca owner_id: {e}")
-        
-        # Estratégia 3: FALLBACK - Criar loja automaticamente
-        print(f"🏪 Criando loja automática para {user.email}")
-        try:
-            store = Store.objects.create(
-                name=f"Loja de {user.email}",
-                owner=user,
-                slug=f"loja-{user.id}-{int(time())}",
-                plan="free"
-            )
-            print(f"✅ Loja criada: {store.id}")
-            return store
-        except Exception as create_error:
-            print(f"❌ Erro ao criar loja: {create_error}")
-            
-            # 🚨 ESTRATÉGIA 4 (PERIGOSA - LEAKAGE):
-            # A linha abaixo foi comentada para evitar vazamento de dados entre usuários.
-            # Se descomentar, um erro na criação pode expor a loja de outro cliente.
-            
-            # try:
-            #     first_store = Store.objects.first()
-            #     if first_store:
-            #         print(f"⚠️ Usando primeira loja disponível: {first_store.id}")
-            #         return first_store
-            # except Exception: pass
-            
-            # Retorno seguro: Se não achou e não criou, retorna None
-            return None
-        
-    except Exception as e:
-        print(f"❌ Erro geral get_current_store: {e}")
-        traceback.print_exc()
-        return None
-
-
-def ensure_user_has_store(user):
-    """
-    ✅ Garante que o usuário tenha uma loja, lançando erro se falhar
-    """
-    try:
-        store = get_current_store(user)
-        
-        if not store:
-            print(f"🏪 Tentativa secundária de criação para {user.email}")
-            try:
-                store = Store.objects.create(
-                    owner=user,
-                    name=f"Loja de {user.email}",
-                    slug=slugify(f"loja-{user.id}"),
-                    storefront_enabled=True,
-                    plan="free"
-                )
-                print(f"✅ Loja criada via ensure: {store.id}")
-            except Exception as create_error:
-                print(f"❌ Falha crítica ao garantir loja: {create_error}")
-                # Retorna None para que a View trate o erro (ex: 403 Forbidden)
-                return None
-        
-        return store
-    
-    except Exception as e:
-        print(f"❌ Erro ensure_user_has_store: {e}")
-        traceback.print_exc()
-        raise
-# inventory/mixins.py ou views.py
+# ⚠️ As definições locais de get_current_store e ensure_user_has_store que
+# moravam AQUI foram removidas. Elas vinham depois do `from .utils import
+# ensure_user_has_store` no topo do arquivo e sobrescreviam o nome
+# importado — ou seja, editar utils.py não surtia efeito neste módulo.
+# A resolução de tenant agora vive só em inventory/utils.py.
 
 class TenantModelMixin:
-    """Mixin tenant-aware com validação de limites"""
+    """
+    Ponto de estrangulamento do isolamento entre clientes.
+
+    Os ~72 filtros `store=` espalhados por este arquivo são consequência
+    deste mixin, não causa. Mudou aqui, mudou em todos.
+    """
     permission_classes = [IsAuthenticated]
-    
+
+    def get_unit(self):
+        """A unidade ativa da requisição (respeita o header X-Unit-Id)."""
+        from .utils import resolve_unit
+        return resolve_unit(self.request)
+
+    def get_units(self):
+        """Todas as unidades que o usuário pode enxergar."""
+        from .utils import allowed_units
+        return allowed_units(self.request.user)
+
+    # Compatibilidade: código antigo chama get_store().
     def get_store(self):
-        return ensure_user_has_store(self.request.user)
-    
+        return self.get_unit()
+
     def get_queryset(self):
-        try:
-            store = self.get_store()
-            return InventoryItem.objects.filter(store=store).select_related('product')
-        except Exception as e:
-            print(f"❌ Erro no get_queryset: {e}")
-            return InventoryItem.objects.none()
-    
+        # ⚠️ NÃO envolver em try/except devolvendo none(). Numa fronteira de
+        # segurança, engolir exceção transforma falha de permissão em lista
+        # vazia — e ninguém abre chamado de tela vazia. PermissionDenied e
+        # NotFound precisam subir e virar 403/404 de verdade.
+        return (
+            InventoryItem.objects
+            .filter(store__in=self.get_units())
+            .select_related('product', 'store')
+        )
+
     def perform_create(self, serializer):
-        store = self.get_store()
+        unidade = self.get_unit()
 
-
-        
-        # VALIDAÇÃO DE LIMITE (novo)
         if hasattr(self, 'check_plan_limits'):
-            self.check_plan_limits(store)
-        
-        serializer.save(store=store)
+            self.check_plan_limits(unidade)
+
+        serializer.save(store=unidade)
     
     def check_plan_limits(self, store):
         """Valida limites do plano antes de criar"""
