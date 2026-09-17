@@ -788,7 +788,7 @@ class StockEntryView(APIView):
         try:
             with transaction.atomic():
                 # Conversão de strings vazias para None
-                raw_sku = data.get('natura_sku')
+                raw_sku = data.get('supplier_sku')
                 sku_input = raw_sku if raw_sku and str(raw_sku).strip() != "" else None
                 
                 raw_barcode = data.get('bar_code')
@@ -809,7 +809,7 @@ class StockEntryView(APIView):
                     product = Product.objects.filter(bar_code=barcode_input).first()
                     
                 if not product and sku_input:
-                    product = Product.objects.filter(natura_sku=sku_input).first()
+                    product = Product.objects.filter(supplier_sku=sku_input).first()
                 
                 print(f"Produto encontrado: {product}")
                 
@@ -826,9 +826,9 @@ class StockEntryView(APIView):
                             product.bar_code = barcode_input
                             updated = True
                             
-                        if sku_input and not product.natura_sku:
-                            if not Product.objects.exclude(id=product.id).filter(natura_sku=sku_input).exists():
-                                product.natura_sku = sku_input
+                        if sku_input and not product.supplier_sku:
+                            if not Product.objects.exclude(id=product.id).filter(supplier_sku=sku_input).exists():
+                                product.supplier_sku = sku_input
                                 updated = True
                         
                         if name_input != "Produto Novo" and product.name != name_input:
@@ -846,7 +846,7 @@ class StockEntryView(APIView):
                     print("Criando novo produto local")
                     product = Product.objects.create(
                         bar_code=barcode_input,
-                        natura_sku=sku_input,
+                        supplier_sku=sku_input,
                         name=name_input,
                         category=category_input,
                         official_price=data.get('sale_price', 0),
@@ -1141,39 +1141,66 @@ def lookup_product(request):
     print(f"   ↳ Busca Numérica detectada. Verificando base local...")
     
     if not force_remote:
-        local = Product.objects.filter(Q(bar_code=query) | Q(natura_sku=query)).first()
+        local = Product.objects.filter(Q(bar_code=query) | Q(supplier_sku=query)).first()
         if local:
             print(f"   ✅ Encontrado no banco local (Match Exato): {local.name}")
             return Response({"found": True, "source": "local", "data": ProductSerializer(local).data})
             
-    # Se não achou local ou forçou remoto, vai pros Scrapers (Google/Natura/Cosmos)
+    # Não achou local: cascata de GTIN (cache → Cosmos → Open Food Facts).
+    # Ver inventory/services/gtin.py — falha em silêncio de propósito, para
+    # que uma API externa fora do ar nunca impeça o cadastro manual.
     if len(query) > 5:
-        print(f"   ↳ Não achou EAN localmente. Iniciando Scraper para {query}...")
-        
+        from .services.gtin import resolver
+
+        r = resolver(query)
+        if r.encontrado and r.origem not in ('local',):
+            return Response({
+                "found": True,
+                "source": r.origem,
+                "data": {
+                    "bar_code": r.gtin,
+                    "name": r.nome,
+                    "brand": r.marca,
+                    "ncm": r.ncm,
+                    "image_url": r.imagem,
+                },
+                "warnings": r.avisos,
+                "message": "Encontrado em catálogo externo. Confira antes de salvar.",
+            })
+        if r.tipo in ('balanca_peso', 'balanca_preco'):
+            return Response({
+                "found": r.encontrado,
+                "source": "balanca",
+                "data": {"product_id": r.product_id, "name": r.nome},
+                "peso_kg": str(r.peso_kg) if r.peso_kg is not None else None,
+                "preco": str(r.preco) if r.preco is not None else None,
+                "message": r.erro or "Etiqueta de balança lida.",
+            })
+
         online_data = None
-        
+
         if online_data:
-            sku_found = online_data.get('natura_sku')
+            sku_found = online_data.get('supplier_sku')
             name_found = online_data.get('name')
             
             # Salvar resultados adicionais (se a busca trouxe vários)
             all_results = online_data.get('all_results', [])
             for p in all_results:
                 Product.objects.update_or_create(
-                    natura_sku=p['natura_sku'],
+                    supplier_sku=p['supplier_sku'],
                     defaults={'name': p['name'], 'official_price': p.get('sale_price', 0), 'category': p.get('category', 'Geral'), 'last_checked_at': timezone.now()}
                 )
             
             # CASO 1: TEM SKU (Google ou Natura achou)
             if sku_found:
                 try:
-                    product = Product.objects.get(natura_sku=sku_found)
+                    product = Product.objects.get(supplier_sku=sku_found)
                     product.bar_code = query
                     product.save()
                     print(f"   🧠 APRENDIZADO: Vinculado EAN {query} ao SKU existente {sku_found}")
                 except Product.DoesNotExist:
                     product = Product.objects.create(
-                        natura_sku=sku_found, bar_code=query, name=name_found,
+                        supplier_sku=sku_found, bar_code=query, name=name_found,
                         official_price=online_data.get('sale_price', 0), category=online_data.get('category', 'Geral'), description=online_data.get('description', '')
                     )
                     print(f"   🧠 APRENDIZADO: Novo produto criado (SKU {sku_found})")

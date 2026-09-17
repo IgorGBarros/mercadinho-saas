@@ -101,7 +101,7 @@ export default function ProductListScreen() {
             </View>
             
             <Text style={styles.productMeta} numberOfLines={1}>
-                {item.category} • SKU: {item.natura_sku || '-'}
+                {item.category} • SKU: {item.supplier_sku || '-'}
             </Text>
 
             <View style={[styles.rowBetween, { marginTop: 8 }]}>

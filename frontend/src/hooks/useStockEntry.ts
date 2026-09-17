@@ -12,7 +12,7 @@ export interface StockEntryData {
   expiration_date?: string | null;
   name?: string;
   category?: string;
-  natura_sku?: string | null;
+  supplier_sku?: string | null;
   brand?: string; // ✅ JÁ EXISTE - mantém
   // campos complementares visuais
   expiry_photo_url?: string | null;
@@ -33,7 +33,7 @@ export function useStockEntry() {
       // 🔥 CORREÇÃO: Incluir campo brand no payload
       const response = await stockApi.create({
         bar_code: data.bar_code,
-        natura_sku: data.natura_sku || "",
+        supplier_sku: data.supplier_sku || "",
         name: data.name || "Produto sem nome",
         category: data.category || "Geral",
         brand: data.brand || "", // ✅ ADICIONAR este campo
@@ -70,7 +70,7 @@ export function useStockEntry() {
       // ✅ Log detalhado para debug
       console.error("Dados enviados:", {
         bar_code: data.bar_code,
-        natura_sku: data.natura_sku,
+        supplier_sku: data.supplier_sku,
         name: data.name,
         category: data.category,
         brand: data.brand,

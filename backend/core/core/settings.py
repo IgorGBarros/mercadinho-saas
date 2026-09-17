@@ -141,6 +141,9 @@ INSTALLED_APPS = [
     'rest_framework_simplejwt.token_blacklist',
     'django_filters',
     'tenancy',
+    'pos',
+    'fiscal',
+    'replenishment',
     'inventory',
     
     'apps.payments',
@@ -520,7 +523,15 @@ GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
 # de ambiente (separada por vírgula), NUNCA no código. Um signal sincroniza
 # is_staff com esta lista: email na lista → vira admin ao logar; email fora
 # da lista → perde is_staff automaticamente (mesmo se marcado no banco).
-# Ex.: ADMIN_EMAILS="igor@exemplo.com,socia@exemplo.com"
+# Ex.: # 🔎 Catálogo de GTIN. Sem token, cai no Open Food Facts (grátis, sem NCM).
+COSMOS_TOKEN = os.getenv("COSMOS_TOKEN", "")
+
+# 🧾 Hub fiscal. Sem token, a nota fica pendente e a venda segue normal —
+# nunca o contrário.
+FOCUS_NFE_TOKEN = os.getenv("FOCUS_NFE_TOKEN", "")
+FOCUS_NFE_AMBIENTE = os.getenv("FOCUS_NFE_AMBIENTE", "homologacao")
+
+ADMIN_EMAILS="igor@exemplo.com,socia@exemplo.com"
 ADMIN_EMAILS = [
     e.strip().lower()
     for e in os.getenv("ADMIN_EMAILS", "").split(",")

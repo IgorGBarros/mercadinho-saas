@@ -1,0 +1,501 @@
+diff --git a/backend/core/core/settings.py b/backend/core/core/settings.py
+index 0847034..50ecc15 100644
+--- a/backend/core/core/settings.py
++++ b/backend/core/core/settings.py
+@@ -520,7 +520,10 @@ GROQ_MODEL = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
+ # de ambiente (separada por vírgula), NUNCA no código. Um signal sincroniza
+ # is_staff com esta lista: email na lista → vira admin ao logar; email fora
+ # da lista → perde is_staff automaticamente (mesmo se marcado no banco).
+-# Ex.: ADMIN_EMAILS="igor@exemplo.com,socia@exemplo.com"
++# Ex.: # 🔎 Catálogo de GTIN. Sem token, cai no Open Food Facts (grátis, sem NCM).
++COSMOS_TOKEN = os.getenv("COSMOS_TOKEN", "")
++
++ADMIN_EMAILS="igor@exemplo.com,socia@exemplo.com"
+ ADMIN_EMAILS = [
+     e.strip().lower()
+     for e in os.getenv("ADMIN_EMAILS", "").split(",")
+diff --git a/backend/core/inventory/services/__init__.py b/backend/core/inventory/services/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/core/inventory/services/gtin.py b/backend/core/inventory/services/gtin.py
+new file mode 100644
+index 0000000..14d71da
+--- /dev/null
++++ b/backend/core/inventory/services/gtin.py
+@@ -0,0 +1,265 @@
++"""
++inventory/services/gtin.py — resolve um código de barras em um produto.
++
++CASCATA DE BUSCA (para na primeira que responde):
++
++    1. Etiqueta de balança  → PLU no catálogo local. NUNCA vai pra internet.
++    2. Catálogo local       → Product por GTIN. Instantâneo.
++    3. Cache externo        → ExternalBarcodeCatalog, o que já buscamos antes.
++    4. Provedor externo     → Cosmos (pago, traz NCM) ou Open Food Facts (grátis).
++    5. Nada                 → cadastro manual, que sempre precisa funcionar.
++
++⚠️ O NÍVEL 4 NUNCA PODE TRAVAR UMA VENDA
++Toda chamada externa tem timeout curto e falha em silêncio. Se o Cosmos
++estiver fora do ar, o lojista cadastra à mão — o que ele já faria de
++qualquer forma. Uma API de catálogo indisponível não pode fechar a loja.
++
++⚠️ POR QUE O CACHE IMPORTA
++O Cosmos é cobrado por consulta e tem cota. Um mercadinho reescaneia o
++mesmo refrigerante centenas de vezes por mês. Sem o nível 3, você paga
++por cada leitura e ainda fica lento.
++"""
++import logging
++from dataclasses import dataclass, field
++from decimal import Decimal
++from typing import Optional
++
++import requests
++from django.conf import settings
++from django.utils import timezone
++
++from ..barcode import TipoCodigo, parse
++
++logger = logging.getLogger(__name__)
++
++TIMEOUT = 4  # segundos. O lojista está de pé no balcão esperando.
++
++
++@dataclass
++class Resolucao:
++    encontrado: bool = False
++    origem: str = 'nenhuma'        # balanca | local | cache | cosmos | openfoodfacts
++    product_id: Optional[int] = None
++    gtin: Optional[str] = None
++    nome: str = ''
++    marca: str = ''
++    ncm: str = ''
++    imagem: str = ''
++    # ⚠️ Anotação obrigatória: sem ela o dataclass ignora o atributo e ele
++    # vira variável de classe, não campo do __init__.
++    peso_kg: Optional[Decimal] = None
++    preco: Optional[Decimal] = None
++    tipo: str = TipoCodigo.DESCONHECIDO
++    erro: str = ''
++    avisos: list = field(default_factory=list)
++
++
++# ══════════════════════════════════════════════════════════════
++# Provedores externos
++# ══════════════════════════════════════════════════════════════
++
++def _consultar_cosmos(gtin: str) -> Optional[dict]:
++    """
++    Cosmos (Bluesoft). Pago, mas é o único que devolve **NCM** — o campo
++    que sozinho decide se a NFC-e é aceita ou rejeitada. Preencher NCM
++    automático e pedir só confirmação ao lojista economiza ele digitar
++    oito dígitos para cada um de 400 itens.
++    """
++    token = getattr(settings, 'COSMOS_TOKEN', '')
++    if not token:
++        return None
++    try:
++        r = requests.get(
++            f'https://api.cosmos.bluesoft.com.br/gtins/{gtin}.json',
++            headers={'X-Cosmos-Token': token, 'User-Agent': 'mercadinho-saas'},
++            timeout=TIMEOUT,
++        )
++        if r.status_code != 200:
++            return None
++        d = r.json()
++        return {
++            'nome': (d.get('description') or '').strip(),
++            'marca': ((d.get('brand') or {}).get('name') or '').strip(),
++            'ncm': ((d.get('ncm') or {}).get('code') or '').replace('.', '').strip(),
++            'imagem': d.get('thumbnail') or '',
++            'origem': 'cosmos',
++        }
++    except (requests.RequestException, ValueError) as e:
++        logger.warning('Cosmos indisponível para %s: %s', gtin, e)
++        return None
++
++
++def _consultar_openfoodfacts(gtin: str) -> Optional[dict]:
++    """
++    Open Food Facts. Gratuito e sem cadastro, cobertura boa em alimento
++    industrializado brasileiro. Não traz NCM — serve para nome, marca e
++    imagem, poupando digitação mesmo sem o Cosmos contratado.
++    """
++    try:
++        r = requests.get(
++            f'https://world.openfoodfacts.org/api/v2/product/{gtin}.json',
++            headers={'User-Agent': 'mercadinho-saas/1.0'},
++            timeout=TIMEOUT,
++        )
++        if r.status_code != 200:
++            return None
++        d = r.json()
++        if d.get('status') != 1:
++            return None
++        p = d.get('product') or {}
++        nome = (p.get('product_name_pt') or p.get('product_name') or '').strip()
++        if not nome:
++            return None
++        return {
++            'nome': nome,
++            'marca': (p.get('brands') or '').split(',')[0].strip(),
++            'ncm': '',
++            'imagem': p.get('image_url') or '',
++            'origem': 'openfoodfacts',
++        }
++    except (requests.RequestException, ValueError) as e:
++        logger.warning('Open Food Facts indisponível para %s: %s', gtin, e)
++        return None
++
++
++# ⚠️ Resolvidos por NOME a cada chamada, não guardados numa tupla.
++# Guardar as funções congela a referência no import, e aí nem o teste
++# consegue trocar o provedor por um mock, nem dá pra reordenar em runtime.
++ORDEM_PROVEDORES = ('_consultar_cosmos', '_consultar_openfoodfacts')
++
++
++def _provedores():
++    import sys
++    modulo = sys.modules[__name__]
++    return [getattr(modulo, nome) for nome in ORDEM_PROVEDORES]
++
++
++# ══════════════════════════════════════════════════════════════
++# Cascata
++# ══════════════════════════════════════════════════════════════
++
++def resolver(codigo: str, *, buscar_externo: bool = True, **layout) -> Resolucao:
++    """
++    Args:
++        codigo: o que o leitor entregou.
++        buscar_externo: False mantém tudo local (útil no totem offline).
++        **layout: digitos_plu, digitos_valor, modo, casas_peso — repassados
++                  ao parser, vindos da configuração da unidade.
++    """
++    from ..models import ExternalBarcodeCatalog, Product
++
++    leitura = parse(codigo, **layout)
++
++    if not leitura.valido and leitura.tipo == TipoCodigo.DESCONHECIDO:
++        return Resolucao(tipo=leitura.tipo, erro=leitura.erro)
++
++    # ── 1. Balança: resolve por PLU, jamais pela internet ──────────────
++    if leitura.tipo in (TipoCodigo.BALANCA_PESO, TipoCodigo.BALANCA_PRECO):
++        res = Resolucao(
++            tipo=leitura.tipo, peso_kg=leitura.peso_kg, preco=leitura.preco
++        )
++        if not leitura.valido:
++            res.erro = leitura.erro
++            return res
++
++        p = Product.objects.filter(requires_scale=True, scale_plu=leitura.plu).first()
++        if p:
++            res.encontrado = True
++            res.origem = 'balanca'
++            res.product_id = p.id
++            res.nome = p.name
++            res.marca = p.brand or ''
++            res.ncm = p.ncm
++        else:
++            res.erro = f'PLU {leitura.plu} não cadastrado nesta loja.'
++        return res
++
++    if not leitura.valido:
++        return Resolucao(tipo=leitura.tipo, erro=leitura.erro)
++
++    gtin = leitura.gtin
++    res = Resolucao(tipo=TipoCodigo.GTIN, gtin=gtin)
++
++    # ── 2. Catálogo local ──────────────────────────────────────────────
++    p = Product.objects.filter(bar_code=gtin).first()
++    if p:
++        res.encontrado = True
++        res.origem = 'local'
++        res.product_id = p.id
++        res.nome = p.name
++        res.marca = p.brand or ''
++        res.ncm = p.ncm
++        res.imagem = p.image_url or ''
++        if not p.is_fiscally_ready:
++            res.avisos = [f'Pendência fiscal: {", ".join(p.fiscal_pendencies)}']
++        return res
++
++    # ── 3. Cache de buscas anteriores ──────────────────────────────────
++    cache = ExternalBarcodeCatalog.objects.filter(gtin=gtin).first()
++    if cache:
++        res.encontrado = True
++        res.origem = 'cache'
++        res.nome = cache.description
++        res.marca = cache.brand
++        return res
++
++    if not buscar_externo:
++        res.erro = 'Não encontrado localmente (busca externa desativada).'
++        return res
++
++    # ── 4. Provedores externos ─────────────────────────────────────────
++    for provedor in _provedores():
++        dados = provedor(gtin)
++        if not dados:
++            continue
++
++        # Grava no cache para não pagar/esperar de novo pelo mesmo código.
++        ExternalBarcodeCatalog.objects.update_or_create(
++            gtin=gtin,
++            defaults={
++                'brand': dados['marca'][:100],
++                'description': dados['nome'][:255],
++                'source': dados['origem'],
++                'matched': False,
++            },
++        )
++        res.encontrado = True
++        res.origem = dados['origem']
++        res.nome = dados['nome']
++        res.marca = dados['marca']
++        res.ncm = dados['ncm']
++        res.imagem = dados['imagem']
++        if not dados['ncm']:
++            res.avisos = ['NCM não veio da consulta — preencha antes de emitir NFC-e.']
++        return res
++
++    # ── 5. Cadastro manual ─────────────────────────────────────────────
++    res.erro = 'Produto não encontrado. Cadastre manualmente.'
++    return res
++
++
++def criar_produto_da_resolucao(res: Resolucao, **extras):
++    """
++    Cria o Product a partir do que a consulta trouxe.
++
++    Não sobrescreve produto existente: quem já está no catálogo tem preço,
++    NCM conferido e histórico — uma consulta externa não pode passar por
++    cima disso.
++    """
++    from ..models import Product
++
++    if not res.gtin:
++        raise ValueError('Resolução sem GTIN não gera produto.')
++
++    produto, criado = Product.objects.get_or_create(
++        bar_code=res.gtin,
++        defaults={
++            'name': res.nome or f'Produto {res.gtin}',
++            'brand': res.marca or None,
++            'ncm': res.ncm or '',
++            'image_url': res.imagem or None,
++            'last_checked_at': timezone.now(),
++            **extras,
++        },
++    )
++    return produto, criado
+diff --git a/backend/core/inventory/tests/test_gtin.py b/backend/core/inventory/tests/test_gtin.py
+new file mode 100644
+index 0000000..b4705b2
+--- /dev/null
++++ b/backend/core/inventory/tests/test_gtin.py
+@@ -0,0 +1,157 @@
++"""
++Cascata de resolução de GTIN.
++
++Nenhum teste bate na internet: os provedores são mockados. Teste que
++depende de rede falha por motivo errado e some da rotina de todo mundo.
++
++    python manage.py test inventory.tests.test_gtin
++"""
++from unittest.mock import patch
++
++from decimal import Decimal
++
++import requests
++from django.test import TestCase
++
++from inventory.barcode import digito_verificador
++from inventory.models import ExternalBarcodeCatalog, Product
++from inventory.services import gtin as svc
++
++EAN = '7894900011517'
++
++
++def _balanca(doze: str) -> str:
++    return doze + str(digito_verificador(doze))
++
++
++class CatalogoLocalTemPrioridade(TestCase):
++    def test_produto_local_nao_dispara_consulta_externa(self):
++        Product.objects.create(name='Refri 2L', bar_code=EAN, ncm='22021000')
++
++        with patch.object(svc, '_consultar_cosmos') as cosmos, \
++             patch.object(svc, '_consultar_openfoodfacts') as off:
++            r = svc.resolver(EAN)
++
++        self.assertEqual(r.origem, 'local')
++        cosmos.assert_not_called()
++        off.assert_not_called()
++
++    def test_avisa_pendencia_fiscal_do_produto_local(self):
++        Product.objects.create(name='Refri 2L', bar_code=EAN)  # sem NCM
++        r = svc.resolver(EAN)
++        self.assertTrue(r.encontrado)
++        self.assertIn('NCM', ' '.join(r.avisos))
++
++
++class ProvedoresExternos(TestCase):
++    def test_cosmos_traz_ncm_e_e_gravado_no_cache(self):
++        retorno = {'nome': 'Refrigerante Cola 2L', 'marca': 'Coca-Cola',
++                   'ncm': '22021000', 'imagem': '', 'origem': 'cosmos'}
++
++        with patch.object(svc, '_consultar_cosmos', return_value=retorno):
++            r = svc.resolver(EAN)
++
++        self.assertEqual(r.origem, 'cosmos')
++        self.assertEqual(r.ncm, '22021000')
++        self.assertEqual(r.avisos, [])
++        self.assertTrue(ExternalBarcodeCatalog.objects.filter(gtin=EAN).exists())
++
++    def test_segunda_leitura_usa_cache_e_nao_consulta_de_novo(self):
++        """
++        O que impede a conta do Cosmos de explodir: mercadinho reescaneia
++        o mesmo refrigerante centenas de vezes por mês.
++        """
++        retorno = {'nome': 'Refrigerante Cola 2L', 'marca': 'Coca-Cola',
++                   'ncm': '22021000', 'imagem': '', 'origem': 'cosmos'}
++
++        with patch.object(svc, '_consultar_cosmos', return_value=retorno) as cosmos:
++            svc.resolver(EAN)
++            self.assertEqual(cosmos.call_count, 1)
++            r2 = svc.resolver(EAN)
++            self.assertEqual(cosmos.call_count, 1, 'não pode consultar duas vezes')
++
++        self.assertEqual(r2.origem, 'cache')
++
++    def test_cai_para_open_food_facts_quando_cosmos_nao_responde(self):
++        off = {'nome': 'Refrigerante Cola', 'marca': 'Coca-Cola',
++               'ncm': '', 'imagem': '', 'origem': 'openfoodfacts'}
++
++        with patch.object(svc, '_consultar_cosmos', return_value=None), \
++             patch.object(svc, '_consultar_openfoodfacts', return_value=off):
++            r = svc.resolver(EAN)
++
++        self.assertEqual(r.origem, 'openfoodfacts')
++        self.assertIn('NCM', ' '.join(r.avisos))
++
++    def test_api_fora_do_ar_nao_derruba_o_cadastro(self):
++        """
++        A garantia mais importante: catálogo externo indisponível devolve
++        'cadastre manualmente', nunca uma exceção que fecharia a loja.
++        """
++        with patch('inventory.services.gtin.requests.get',
++                   side_effect=requests.Timeout('timeout')):
++            r = svc.resolver(EAN)
++
++        self.assertFalse(r.encontrado)
++        self.assertIn('manualmente', r.erro)
++
++    def test_json_quebrado_tambem_e_absorvido(self):
++        with patch('inventory.services.gtin.requests.get',
++                   side_effect=ValueError('json inválido')):
++            r = svc.resolver(EAN)
++        self.assertFalse(r.encontrado)
++
++
++class ModoOffline(TestCase):
++    def test_totem_sem_internet_so_olha_o_local(self):
++        with patch.object(svc, '_consultar_cosmos') as cosmos:
++            r = svc.resolver(EAN, buscar_externo=False)
++        cosmos.assert_not_called()
++        self.assertIn('desativada', r.erro)
++
++
++class Balanca(TestCase):
++    def test_plu_cadastrado_resolve_com_peso(self):
++        Product.objects.create(name='Picanha', requires_scale=True,
++                               scale_plu=1234, ncm='02013000')
++        with patch.object(svc, '_consultar_cosmos') as cosmos:
++            r = svc.resolver(_balanca('200123401500'))
++
++        self.assertTrue(r.encontrado)
++        self.assertEqual(r.origem, 'balanca')
++        self.assertEqual(r.nome, 'Picanha')
++        self.assertEqual(r.peso_kg, Decimal('1.5'))
++        cosmos.assert_not_called()
++
++    def test_plu_desconhecido_avisa_sem_ir_pra_internet(self):
++        with patch.object(svc, '_consultar_cosmos') as cosmos:
++            r = svc.resolver(_balanca('209999901500'))
++        self.assertFalse(r.encontrado)
++        self.assertIn('99999', r.erro)
++        cosmos.assert_not_called()
++
++
++class CriacaoDeProduto(TestCase):
++    def test_cria_produto_com_ncm_da_consulta(self):
++        retorno = {'nome': 'Refrigerante Cola 2L', 'marca': 'Coca-Cola',
++                   'ncm': '22021000', 'imagem': '', 'origem': 'cosmos'}
++        with patch.object(svc, '_consultar_cosmos', return_value=retorno):
++            r = svc.resolver(EAN)
++
++        p, criado = svc.criar_produto_da_resolucao(r)
++        self.assertTrue(criado)
++        self.assertEqual(p.ncm, '22021000')
++        self.assertTrue(p.is_fiscally_ready)
++
++    def test_nao_sobrescreve_produto_existente(self):
++        """
++        Quem já está no catálogo tem preço, NCM conferido e histórico.
++        Uma consulta externa não passa por cima disso.
++        """
++        Product.objects.create(name='Nome do lojista', bar_code=EAN, ncm='11111111')
++        r = svc.Resolucao(gtin=EAN, nome='Nome do Cosmos', ncm='22021000')
++
++        p, criado = svc.criar_produto_da_resolucao(r)
++        self.assertFalse(criado)
++        self.assertEqual(p.name, 'Nome do lojista')
++        self.assertEqual(p.ncm, '11111111')
+diff --git a/backend/core/inventory/views.py b/backend/core/inventory/views.py
+index 9cf8a54..2adc867 100644
+--- a/backend/core/inventory/views.py
++++ b/backend/core/inventory/views.py
+@@ -1146,12 +1146,39 @@ def lookup_product(request):
+             print(f"   ✅ Encontrado no banco local (Match Exato): {local.name}")
+             return Response({"found": True, "source": "local", "data": ProductSerializer(local).data})
+             
+-    # Se não achou local ou forçou remoto, vai pros Scrapers (Google/Natura/Cosmos)
++    # Não achou local: cascata de GTIN (cache → Cosmos → Open Food Facts).
++    # Ver inventory/services/gtin.py — falha em silêncio de propósito, para
++    # que uma API externa fora do ar nunca impeça o cadastro manual.
+     if len(query) > 5:
+-        print(f"   ↳ Não achou EAN localmente. Iniciando Scraper para {query}...")
+-        
++        from .services.gtin import resolver
++
++        r = resolver(query)
++        if r.encontrado and r.origem not in ('local',):
++            return Response({
++                "found": True,
++                "source": r.origem,
++                "data": {
++                    "bar_code": r.gtin,
++                    "name": r.nome,
++                    "brand": r.marca,
++                    "ncm": r.ncm,
++                    "image_url": r.imagem,
++                },
++                "warnings": r.avisos,
++                "message": "Encontrado em catálogo externo. Confira antes de salvar.",
++            })
++        if r.tipo in ('balanca_peso', 'balanca_preco'):
++            return Response({
++                "found": r.encontrado,
++                "source": "balanca",
++                "data": {"product_id": r.product_id, "name": r.nome},
++                "peso_kg": str(r.peso_kg) if r.peso_kg is not None else None,
++                "preco": str(r.preco) if r.preco is not None else None,
++                "message": r.erro or "Etiqueta de balança lida.",
++            })
++
+         online_data = None
+-        
++
+         if online_data:
+             sku_found = online_data.get('supplier_sku')
+             name_found = online_data.get('name')

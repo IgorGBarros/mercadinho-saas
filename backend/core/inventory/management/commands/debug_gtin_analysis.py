@@ -17,12 +17,12 @@ class Command(BaseCommand):
         product_sku = options['product_sku']
         
         try:
-            product = Product.objects.get(natura_sku=product_sku)
+            product = Product.objects.get(supplier_sku=product_sku)
         except Product.DoesNotExist:
             self.stdout.write(self.style.ERROR(f"❌ Produto {product_sku} não encontrado"))
             return
         
-        self.stdout.write(f"🔍 Análise detalhada: {product.natura_sku} - {product.name}")
+        self.stdout.write(f"🔍 Análise detalhada: {product.supplier_sku} - {product.name}")
         
         # Lista dos GTINs que você encontrou
         gtins_found = [

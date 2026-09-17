@@ -1,0 +1,1399 @@
+diff --git a/backend/core/inventory/barcode.py b/backend/core/inventory/barcode.py
+new file mode 100644
+index 0000000..cdeb0f9
+--- /dev/null
++++ b/backend/core/inventory/barcode.py
+@@ -0,0 +1,155 @@
++"""
++inventory/barcode.py — leitura de código de barras no PDV.
++
++Dois mundos convivem no mesmo leitor:
++
++1. **GTIN global** (EAN-13, EAN-8, GTIN-14, UPC-A). Identifica o produto no
++   mundo inteiro. É o que o Cosmos/Bluesoft resolve.
++
++2. **Etiqueta de balança** — prefixos 20–29, reservados pela GS1 para
++   circulação interna da loja. Aqui o código NÃO identifica um produto
++   global: parte dos dígitos carrega o PLU e parte carrega o PESO ou o
++   PREÇO calculado na balança.
++
++⚠️ POR QUE ISSO É BLOQUEANTE
++Sem tratar o prefixo de balança, o sistema simplesmente não funciona em
++açougue, padaria e hortifruti: cada etiqueta gerada é um código diferente,
++então o lookup no catálogo global sempre falha e a venda trava. É pouco
++código, mas é a diferença entre atender ou não metade dos mercadinhos de
++bairro.
++
++⚠️ O LAYOUT DA BALANÇA É CONFIGURÁVEL POR LOJA
++Não existe padrão nacional único: Toledo, Filizola e Urano são
++configuráveis, e cada loja escolhe se a etiqueta carrega peso ou preço.
++Por isso o layout é parâmetro, não constante. O default abaixo é o arranjo
++mais comum (prefixo + 5 de PLU + 5 de valor + verificador).
++"""
++from dataclasses import dataclass
++from decimal import Decimal
++from typing import Optional
++
++# Prefixos GS1 de circulação restrita — nunca consulte catálogo global com eles.
++PREFIXOS_INTERNOS = tuple(str(n) for n in range(20, 30))
++
++
++class TipoCodigo:
++    GTIN = 'gtin'
++    BALANCA_PESO = 'balanca_peso'
++    BALANCA_PRECO = 'balanca_preco'
++    DESCONHECIDO = 'desconhecido'
++
++
++@dataclass
++class LeituraCodigo:
++    """Resultado da leitura. `raw` é sempre preservado para auditoria."""
++    raw: str
++    tipo: str
++    gtin: Optional[str] = None
++    plu: Optional[int] = None
++    peso_kg: Optional[Decimal] = None
++    preco: Optional[Decimal] = None
++    valido: bool = False
++    erro: str = ''
++
++    @property
++    def precisa_catalogo_global(self) -> bool:
++        """Só GTIN vale consulta externa. Etiqueta de balança é local."""
++        return self.tipo == TipoCodigo.GTIN and self.valido
++
++
++def digito_verificador(codigo_sem_dv: str) -> int:
++    """
++    Dígito verificador GS1 (módulo 10).
++
++    Pesos 3 e 1 alternados, da direita para a esquerda. Vale para EAN-8,
++    EAN-13, UPC-A e GTIN-14 — a regra é a mesma, muda só o comprimento.
++    """
++    soma = 0
++    for i, ch in enumerate(reversed(codigo_sem_dv)):
++        peso = 3 if i % 2 == 0 else 1
++        soma += int(ch) * peso
++    return (10 - (soma % 10)) % 10
++
++
++def gtin_valido(codigo: str) -> bool:
++    """Confere o dígito verificador. Pega erro de digitação e leitura suja."""
++    if not codigo or not codigo.isdigit():
++        return False
++    if len(codigo) not in (8, 12, 13, 14):
++        return False
++    return digito_verificador(codigo[:-1]) == int(codigo[-1])
++
++
++def parse(
++    codigo: str,
++    *,
++    digitos_plu: int = 5,
++    digitos_valor: int = 5,
++    modo: str = 'peso',
++    casas_peso: int = 3,
++) -> LeituraCodigo:
++    """
++    Interpreta o que o leitor entregou.
++
++    Args:
++        codigo: os dígitos lidos.
++        digitos_plu: quantos dígitos identificam o produto na etiqueta.
++        digitos_valor: quantos dígitos carregam peso ou preço.
++        modo: 'peso' (etiqueta traz kg) ou 'preco' (etiqueta traz R$).
++        casas_peso: casas decimais do peso. 3 = gramas (12345 → 12,345 kg).
++
++    O layout vem da configuração da unidade, não daqui.
++    """
++    limpo = ''.join(c for c in (codigo or '') if c.isdigit())
++
++    if not limpo:
++        return LeituraCodigo(raw=codigo or '', tipo=TipoCodigo.DESCONHECIDO,
++                             erro='Código vazio.')
++
++    # ── Etiqueta de balança ────────────────────────────────────────────
++    if len(limpo) == 13 and limpo[:2] in PREFIXOS_INTERNOS:
++        esperado = 2 + digitos_plu + digitos_valor + 1
++        if esperado != 13:
++            return LeituraCodigo(
++                raw=limpo, tipo=TipoCodigo.DESCONHECIDO,
++                erro=f'Layout de balança inconsistente: soma {esperado} dígitos, esperado 13.'
++            )
++
++        ini_valor = 2 + digitos_plu
++        plu = int(limpo[2:ini_valor])
++        bruto = int(limpo[ini_valor:ini_valor + digitos_valor])
++
++        # ⚠️ O DV da etiqueta é conferido, mas o dígito interno de peso que
++        # algumas balanças inserem NÃO é tratado aqui — se a sua balança usa
++        # esse arranjo, ajuste digitos_valor na configuração da unidade.
++        ok = digito_verificador(limpo[:-1]) == int(limpo[-1])
++
++        if modo == 'preco':
++            return LeituraCodigo(
++                raw=limpo, tipo=TipoCodigo.BALANCA_PRECO, plu=plu,
++                preco=Decimal(bruto) / Decimal(100),
++                valido=ok, erro='' if ok else 'Dígito verificador não confere.',
++            )
++
++        return LeituraCodigo(
++            raw=limpo, tipo=TipoCodigo.BALANCA_PESO, plu=plu,
++            peso_kg=Decimal(bruto) / (Decimal(10) ** casas_peso),
++            valido=ok, erro='' if ok else 'Dígito verificador não confere.',
++        )
++
++    # ── GTIN global ────────────────────────────────────────────────────
++    if len(limpo) in (8, 12, 13, 14):
++        ok = gtin_valido(limpo)
++        # UPC-A (12) vira EAN-13 com zero à esquerda: o mesmo produto não
++        # pode existir duas vezes no catálogo por causa disso.
++        normalizado = limpo.zfill(13) if len(limpo) == 12 else limpo
++        return LeituraCodigo(
++            raw=limpo, tipo=TipoCodigo.GTIN,
++            gtin=normalizado if ok else None,
++            valido=ok, erro='' if ok else 'Dígito verificador não confere.',
++        )
++
++    return LeituraCodigo(
++        raw=limpo, tipo=TipoCodigo.DESCONHECIDO,
++        erro=f'Comprimento não reconhecido ({len(limpo)} dígitos).',
++    )
+diff --git a/backend/core/inventory/management/commands/analyze_barcode_results.py b/backend/core/inventory/management/commands/analyze_barcode_results.py
+index 7bb0768..05c171f 100644
+--- a/backend/core/inventory/management/commands/analyze_barcode_results.py
++++ b/backend/core/inventory/management/commands/analyze_barcode_results.py
+@@ -23,7 +23,7 @@ class Command(BaseCommand):
+         parser.add_argument('--delay', type=float, default=8.0, help='Delay entre buscas')
+         parser.add_argument('--dry-run', action='store_true', help='Apenas simular')
+         parser.add_argument('--skip-existing', action='store_true', help='Pular produtos que já têm código de barras')
+-        parser.add_argument('--test-product', type=str, help='Testar com um produto específico (natura_sku)')
++        parser.add_argument('--test-product', type=str, help='Testar com um produto específico (supplier_sku)')
+     
+     def handle(self, *args, **options):
+         brand = options['brand']
+@@ -38,7 +38,7 @@ class Command(BaseCommand):
+         # Se for teste de produto específico
+         if test_product:
+             try:
+-                product = Product.objects.get(natura_sku=test_product)
++                product = Product.objects.get(supplier_sku=test_product)
+                 self.test_single_product(product, delay, dry_run)
+                 return
+             except Product.DoesNotExist:
+@@ -76,7 +76,7 @@ class Command(BaseCommand):
+                     if result['cloudflare_blocked']:
+                         stats['cloudflare_blocks'] += 1
+                         self.stdout.write(self.style.ERROR(
+-                            f"🛡️ [{stats['processed']}/{limit}] {product.natura_sku} - Bloqueado pelo Cloudflare"
++                            f"🛡️ [{stats['processed']}/{limit}] {product.supplier_sku} - Bloqueado pelo Cloudflare"
+                         ))
+                     elif result['found']:
+                         stats['found_barcodes'] += 1
+@@ -91,13 +91,13 @@ class Command(BaseCommand):
+                             stats['low_confidence'] += 1
+                         
+                         self.stdout.write(self.style.SUCCESS(
+-                            f"✅ [{stats['processed']}/{limit}] {product.natura_sku} - "
++                            f"✅ [{stats['processed']}/{limit}] {product.supplier_sku} - "
+                             f"GTIN: {result['gtin']} ({confidence}) - "
+                             f"Termo: '{result.get('search_term', 'N/A')}'"
+                         ))
+                     else:
+                         self.stdout.write(
+-                            f"❌ [{stats['processed']}/{limit}] {product.natura_sku} - "
++                            f"❌ [{stats['processed']}/{limit}] {product.supplier_sku} - "
+                             f"Sem GTIN (termo: '{result.get('search_term', 'N/A')}')"
+                         )
+                     
+@@ -108,7 +108,7 @@ class Command(BaseCommand):
+                 except Exception as e:
+                     stats['errors'] += 1
+                     self.stdout.write(self.style.ERROR(
+-                        f"❌ [{stats['processed'] + 1}/{limit}] Erro no produto {product.natura_sku}: {e}"
++                        f"❌ [{stats['processed'] + 1}/{limit}] Erro no produto {product.supplier_sku}: {e}"
+                     ))
+                     time.sleep(delay * 1.5)
+         
+@@ -116,7 +116,7 @@ class Command(BaseCommand):
+     
+     def test_single_product(self, product, delay, dry_run):
+         """Testa busca para um produto específico"""
+-        self.stdout.write(f"🧪 Testando produto: {product.natura_sku} - {product.name}")
++        self.stdout.write(f"🧪 Testando produto: {product.supplier_sku} - {product.name}")
+         
+         with SB(uc=True, headless=False, page_load_strategy="eager") as sb:
+             result = self.search_product_with_tracking(sb, product, delay, dry_run, debug=True)
+@@ -183,7 +183,7 @@ class Command(BaseCommand):
+             page_source = sb.get_page_source()
+             
+             if debug:
+-                with open(f"debug_tracked_{product.natura_sku}.html", "w", encoding="utf-8") as f:
++                with open(f"debug_tracked_{product.supplier_sku}.html", "w", encoding="utf-8") as f:
+                     f.write(page_source)
+                 self.stdout.write(f"   💾 HTML salvo para debug")
+             
+@@ -223,7 +223,7 @@ class Command(BaseCommand):
+                     'source': f'cosmos_tracked_{confidence}',
+                     'matched': True,
+                     # ✅ CAMPOS DE RASTREAMENTO
+-                    'searched_product_sku': product.natura_sku,
++                    'searched_product_sku': product.supplier_sku,
+                     'searched_product_name': product.name,
+                     'search_term_used': search_term,
+                     'confidence_level': confidence
+@@ -232,7 +232,7 @@ class Command(BaseCommand):
+             
+             # Se já existia, atualizar campos de rastreamento
+             if not created:
+-                obj.searched_product_sku = product.natura_sku
++                obj.searched_product_sku = product.supplier_sku
+                 obj.searched_product_name = product.name
+                 obj.search_term_used = search_term
+                 obj.confidence_level = confidence
+@@ -253,7 +253,7 @@ class Command(BaseCommand):
+                             'description': f"[ALT] {product.name}",  # Marcar como alternativa
+                             'source': f'cosmos_alternative_{confidence}',
+                             'matched': False,  # Não matched automaticamente
+-                            'searched_product_sku': product.natura_sku,
++                            'searched_product_sku': product.supplier_sku,
+                             'searched_product_name': product.name,
+                             'search_term_used': search_term,
+                             'confidence_level': 'alternative'
+@@ -266,7 +266,7 @@ class Command(BaseCommand):
+                 product.save(update_fields=['bar_code'])
+             
+         except Exception as e:
+-            logger.error(f"Erro ao salvar GTIN {best_gtin} para produto {product.natura_sku}: {e}")
++            logger.error(f"Erro ao salvar GTIN {best_gtin} para produto {product.supplier_sku}: {e}")
+     
+     # ... (resto dos métodos permanecem iguais: extract_gtins_with_context, prepare_search_term, etc.)
+     
+diff --git a/backend/core/inventory/management/commands/cosmos_barcode_finder.py b/backend/core/inventory/management/commands/cosmos_barcode_finder.py
+index 0ba772d..8029d28 100644
+--- a/backend/core/inventory/management/commands/cosmos_barcode_finder.py
++++ b/backend/core/inventory/management/commands/cosmos_barcode_finder.py
+@@ -23,7 +23,7 @@ class Command(BaseCommand):
+         parser.add_argument('--delay', type=float, default=8.0, help='Delay entre buscas')
+         parser.add_argument('--dry-run', action='store_true', help='Apenas simular')
+         parser.add_argument('--skip-existing', action='store_true', help='Pular produtos que já têm código de barras')
+-        parser.add_argument('--test-product', type=str, help='Testar com um produto específico (natura_sku)')
++        parser.add_argument('--test-product', type=str, help='Testar com um produto específico (supplier_sku)')
+     
+     def handle(self, *args, **options):
+         brand = options['brand']
+@@ -38,7 +38,7 @@ class Command(BaseCommand):
+         # Se for teste de produto específico
+         if test_product:
+             try:
+-                product = Product.objects.get(natura_sku=test_product)
++                product = Product.objects.get(supplier_sku=test_product)
+                 self.test_single_product(product, delay, dry_run)
+                 return
+             except Product.DoesNotExist:
+@@ -92,7 +92,7 @@ class Command(BaseCommand):
+                     if result['cloudflare_blocked']:
+                         stats['cloudflare_blocks'] += 1
+                         self.stdout.write(self.style.ERROR(
+-                            f"🛡️ [{stats['processed']}/{limit}] {product.natura_sku} - Bloqueado pelo Cloudflare"
++                            f"🛡️ [{stats['processed']}/{limit}] {product.supplier_sku} - Bloqueado pelo Cloudflare"
+                         ))
+                     elif result['found']:
+                         stats['found_barcodes'] += 1
+@@ -112,12 +112,12 @@ class Command(BaseCommand):
+                         alt_info = f" +{result.get('alternatives_saved', 0)}alt" if result.get('alternatives_saved', 0) > 0 else ""
+                         
+                         self.stdout.write(self.style.SUCCESS(
+-                            f"✅ [{stats['processed']}/{limit}] {product.natura_sku} - "
++                            f"✅ [{stats['processed']}/{limit}] {product.supplier_sku} - "
+                             f"GTIN: {result['gtin']} ({confidence}){alt_info}"
+                         ))
+                     else:
+                         self.stdout.write(
+-                            f"❌ [{stats['processed']}/{limit}] {product.natura_sku} - "
++                            f"❌ [{stats['processed']}/{limit}] {product.supplier_sku} - "
+                             f"Sem GTIN encontrado"
+                         )
+                     
+@@ -128,7 +128,7 @@ class Command(BaseCommand):
+                 except Exception as e:
+                     stats['errors'] += 1
+                     self.stdout.write(self.style.ERROR(
+-                        f"❌ [{stats['processed'] + 1}/{limit}] Erro no produto {product.natura_sku}: {e}"
++                        f"❌ [{stats['processed'] + 1}/{limit}] Erro no produto {product.supplier_sku}: {e}"
+                     ))
+                     time.sleep(delay * 1.5)
+         
+@@ -136,7 +136,7 @@ class Command(BaseCommand):
+     
+     def test_single_product(self, product, delay, dry_run):
+         """Testa busca para um produto específico"""
+-        self.stdout.write(f"🧪 Testando produto: {product.natura_sku} - {product.name}")
++        self.stdout.write(f"🧪 Testando produto: {product.supplier_sku} - {product.name}")
+         
+         with SB(uc=True, headless=False, page_load_strategy="eager") as sb:
+             result = self.search_product_smart(sb, product, delay, dry_run, debug=True)
+@@ -205,7 +205,7 @@ class Command(BaseCommand):
+             page_source = sb.get_page_source()
+             
+             if debug:
+-                with open(f"debug_search_{product.natura_sku}.html", "w", encoding="utf-8") as f:
++                with open(f"debug_search_{product.supplier_sku}.html", "w", encoding="utf-8") as f:
+                     f.write(page_source)
+                 self.stdout.write(f"   💾 HTML salvo para debug")
+             
+@@ -462,7 +462,7 @@ class Command(BaseCommand):
+         alternatives_saved = 0
+         
+         try:
+-            print(f"🔄 Salvando GTIN {best_gtin} para produto {product.natura_sku}")
++            print(f"🔄 Salvando GTIN {best_gtin} para produto {product.supplier_sku}")
+             
+             # ✅ 1. SALVAR APENAS O MELHOR GTIN
+             obj, created = ExternalBarcodeCatalog.objects.get_or_create(
+@@ -472,7 +472,7 @@ class Command(BaseCommand):
+                     'description': product.name,
+                     'source': f'cosmos_optimized_{confidence}',
+                     'matched': True,
+-                    'searched_product_sku': product.natura_sku,
++                    'searched_product_sku': product.supplier_sku,
+                     'searched_product_name': product.name,
+                     'search_term_used': search_term,
+                     'confidence_level': confidence
+@@ -481,7 +481,7 @@ class Command(BaseCommand):
+             
+             # Se já existia, atualizar
+             if not created:
+-                obj.searched_product_sku = product.natura_sku
++                obj.searched_product_sku = product.supplier_sku
+                 obj.searched_product_name = product.name
+                 obj.search_term_used = search_term
+                 obj.confidence_level = confidence
+@@ -516,7 +516,7 @@ class Command(BaseCommand):
+                                     'description': f"[ALT-{score}] {product.name}",
+                                     'source': f'cosmos_alt_relevant',
+                                     'matched': False,
+-                                    'searched_product_sku': product.natura_sku,
++                                    'searched_product_sku': product.supplier_sku,
+                                     'searched_product_name': product.name,
+                                     'search_term_used': search_term,
+                                     'confidence_level': f'alternative_{score}'
+@@ -535,15 +535,15 @@ class Command(BaseCommand):
+                 if not product.bar_code:  # ← PROTEÇÃO ADICIONADA
+                     product.bar_code = best_gtin
+                     product.save(update_fields=['bar_code'])
+-                    print(f"✅ Código de barras salvo no produto {product.natura_sku}")
++                    print(f"✅ Código de barras salvo no produto {product.supplier_sku}")
+                 else:
+-                    print(f"🔒 Produto {product.natura_sku} já tem código de barras: {product.bar_code} (não sobrescrito)")
++                    print(f"🔒 Produto {product.supplier_sku} já tem código de barras: {product.bar_code} (não sobrescrito)")
+             else:
+                 print(f"⚠️ Confiança baixa ({confidence}) - não salvo no produto")
+             
+         except Exception as e:
+             print(f"❌ Erro ao salvar GTIN {best_gtin}: {e}")
+-            logger.error(f"Erro ao salvar GTIN {best_gtin} para produto {product.natura_sku}: {e}")
++            logger.error(f"Erro ao salvar GTIN {best_gtin} para produto {product.supplier_sku}: {e}")
+         
+         return alternatives_saved
+     
+diff --git a/backend/core/inventory/management/commands/debug_gtin_analysis.py b/backend/core/inventory/management/commands/debug_gtin_analysis.py
+index e242a20..bc0cc68 100644
+--- a/backend/core/inventory/management/commands/debug_gtin_analysis.py
++++ b/backend/core/inventory/management/commands/debug_gtin_analysis.py
+@@ -17,12 +17,12 @@ class Command(BaseCommand):
+         product_sku = options['product_sku']
+         
+         try:
+-            product = Product.objects.get(natura_sku=product_sku)
++            product = Product.objects.get(supplier_sku=product_sku)
+         except Product.DoesNotExist:
+             self.stdout.write(self.style.ERROR(f"❌ Produto {product_sku} não encontrado"))
+             return
+         
+-        self.stdout.write(f"🔍 Análise detalhada: {product.natura_sku} - {product.name}")
++        self.stdout.write(f"🔍 Análise detalhada: {product.supplier_sku} - {product.name}")
+         
+         # Lista dos GTINs que você encontrou
+         gtins_found = [
+diff --git a/backend/core/inventory/management/commands/enrich_catalog.py b/backend/core/inventory/management/commands/enrich_catalog.py
+index 65c0115..c7c8333 100644
+--- a/backend/core/inventory/management/commands/enrich_catalog.py
++++ b/backend/core/inventory/management/commands/enrich_catalog.py
+@@ -215,7 +215,7 @@ class Command(BaseCommand):
+ 
+                         # 🚀 SALVAMENTO NO BANCO DE DADOS (COM BRAND E CATEGORY INTELIGENTE)
+                         product, created = Product.objects.get_or_create(
+-                            natura_sku=str(sku),
++                            supplier_sku=str(sku),
+                             defaults={
+                                 'name': name[:255],
+                                 'brand': brand,                        # 🚀 A MARCA
+diff --git a/backend/core/inventory/migrations/0003_produto_fiscal_e_balanca.py b/backend/core/inventory/migrations/0003_produto_fiscal_e_balanca.py
+new file mode 100644
+index 0000000..67709ee
+--- /dev/null
++++ b/backend/core/inventory/migrations/0003_produto_fiscal_e_balanca.py
+@@ -0,0 +1,116 @@
++# Generated by Django 5.2.13 on 2026-08-03 01:36
++
++from django.db import migrations, models
++
++
++class Migration(migrations.Migration):
++
++    dependencies = [
++        ('inventory', '0002_initial'),
++    ]
++
++    operations = [
++        migrations.RemoveIndex(
++            model_name='product',
++            name='inventory_p_natura__691460_idx',
++        ),
++        # ⚠️ RenameField, não Remove+Add: o par destrutivo que o
++        # makemigrations gera por padrão APAGARIA a coluna e recriaria
++        # vazia. Aqui não há dados, mas o hábito custa caro depois.
++        migrations.RenameField(
++            model_name='product',
++            old_name='natura_sku',
++            new_name='supplier_sku',
++        ),
++        migrations.AddField(
++            model_name='product',
++            name='aliq_icms',
++            field=models.DecimalField(decimal_places=2, default=0, max_digits=5, verbose_name='Alíquota ICMS %'),
++        ),
++        migrations.AddField(
++            model_name='product',
++            name='cest',
++            field=models.CharField(blank=True, max_length=7, verbose_name='CEST'),
++        ),
++        migrations.AddField(
++            model_name='product',
++            name='cfop',
++            field=models.CharField(default='5102', max_length=4, verbose_name='CFOP'),
++        ),
++        migrations.AddField(
++            model_name='product',
++            name='csosn',
++            field=models.CharField(blank=True, default='102', max_length=3, verbose_name='CSOSN'),
++        ),
++        migrations.AddField(
++            model_name='product',
++            name='cst_cofins',
++            field=models.CharField(blank=True, default='49', max_length=2),
++        ),
++        migrations.AddField(
++            model_name='product',
++            name='cst_icms',
++            field=models.CharField(blank=True, max_length=3, verbose_name='CST ICMS'),
++        ),
++        migrations.AddField(
++            model_name='product',
++            name='cst_pis',
++            field=models.CharField(blank=True, default='49', max_length=2),
++        ),
++        migrations.AddField(
++            model_name='product',
++            name='is_age_restricted',
++            field=models.BooleanField(default=False, verbose_name='Venda restrita por idade'),
++        ),
++        migrations.AddField(
++            model_name='product',
++            name='ncm',
++            field=models.CharField(blank=True, max_length=8, verbose_name='NCM'),
++        ),
++        migrations.AddField(
++            model_name='product',
++            name='origem',
++            field=models.CharField(choices=[('0', '0 — Nacional'), ('1', '1 — Estrangeira, importação direta'), ('2', '2 — Estrangeira, adquirida no mercado interno')], default='0', max_length=1),
++        ),
++        migrations.AddField(
++            model_name='product',
++            name='requires_scale',
++            field=models.BooleanField(default=False, verbose_name='Vendido a granel (balança)'),
++        ),
++        migrations.AddField(
++            model_name='product',
++            name='scale_plu',
++            field=models.PositiveIntegerField(blank=True, help_text='Código interno impresso na etiqueta da balança.', null=True, verbose_name='PLU da balança'),
++        ),
++        migrations.AddField(
++            model_name='product',
++            name='shelf_life_days',
++            field=models.PositiveIntegerField(blank=True, help_text='Usado para sugerir a data de vencimento no recebimento.', null=True, verbose_name='Validade padrão (dias)'),
++        ),
++        migrations.AddField(
++            model_name='product',
++            name='unidade_com',
++            field=models.CharField(choices=[('UN', 'Unidade'), ('KG', 'Quilograma'), ('G', 'Grama'), ('L', 'Litro'), ('ML', 'Mililitro'), ('CX', 'Caixa'), ('PCT', 'Pacote'), ('FD', 'Fardo')], default='UN', max_length=6, verbose_name='Unidade Comercial'),
++        ),
++        migrations.AlterField(
++            model_name='product',
++            name='official_price',
++            field=models.DecimalField(decimal_places=2, default=0.0, max_digits=10, verbose_name='Preço de Referência'),
++        ),
++        migrations.AddIndex(
++            model_name='product',
++            index=models.Index(fields=['supplier_sku'], name='inventory_p_supplie_68ed65_idx'),
++        ),
++        migrations.AddIndex(
++            model_name='product',
++            index=models.Index(fields=['ncm'], name='idx_product_ncm'),
++        ),
++        migrations.AddIndex(
++            model_name='product',
++            index=models.Index(fields=['requires_scale', 'scale_plu'], name='inventory_p_require_5eaab3_idx'),
++        ),
++        migrations.AddConstraint(
++            model_name='product',
++            constraint=models.UniqueConstraint(condition=models.Q(('requires_scale', True), ('scale_plu__isnull', False)), fields=('scale_plu',), name='uniq_scale_plu_quando_granel'),
++        ),
++    ]
+diff --git a/backend/core/inventory/migrations/0004_alter_product_supplier_sku.py b/backend/core/inventory/migrations/0004_alter_product_supplier_sku.py
+new file mode 100644
+index 0000000..a637430
+--- /dev/null
++++ b/backend/core/inventory/migrations/0004_alter_product_supplier_sku.py
+@@ -0,0 +1,18 @@
++# Generated by Django 5.2.13 on 2026-08-03 01:36
++
++from django.db import migrations, models
++
++
++class Migration(migrations.Migration):
++
++    dependencies = [
++        ('inventory', '0003_produto_fiscal_e_balanca'),
++    ]
++
++    operations = [
++        migrations.AlterField(
++            model_name='product',
++            name='supplier_sku',
++            field=models.CharField(blank=True, max_length=50, null=True, unique=True, verbose_name='SKU do Fornecedor'),
++        ),
++    ]
+diff --git a/backend/core/inventory/models.py b/backend/core/inventory/models.py
+index b3d627d..a428a0a 100644
+--- a/backend/core/inventory/models.py
++++ b/backend/core/inventory/models.py
+@@ -79,40 +79,158 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
+ # ==========================================
+ 
+ class Product(models.Model):
+-    """Catálogo global de produtos - alimentado por scrapers"""
++    """
++    Catálogo global de produtos, identificado por GTIN/EAN.
++
++    ⚠️ OS CAMPOS FISCAIS NÃO SÃO OPCIONAIS PARA VENDER.
++    Sem NCM, CFOP, CSOSN/CST e origem, o XML da NFC-e é rejeitado pela
++    SEFAZ. Eles são nullable aqui só para permitir cadastro em duas etapas
++    (escaneia agora, completa o fiscal depois) — mas `is_fiscally_ready`
++    é o que decide se o produto pode entrar numa venda com nota.
++    """
++
++    class Origem(models.TextChoices):
++        NACIONAL = '0', '0 — Nacional'
++        IMPORTACAO_DIRETA = '1', '1 — Estrangeira, importação direta'
++        MERCADO_INTERNO = '2', '2 — Estrangeira, adquirida no mercado interno'
++
++    class Unidade(models.TextChoices):
++        UN = 'UN', 'Unidade'
++        KG = 'KG', 'Quilograma'
++        G = 'G', 'Grama'
++        L = 'L', 'Litro'
++        ML = 'ML', 'Mililitro'
++        CX = 'CX', 'Caixa'
++        PCT = 'PCT', 'Pacote'
++        FD = 'FD', 'Fardo'
++
+     name = models.CharField(max_length=255, verbose_name="Nome do Produto")
+     brand = models.CharField(max_length=100, null=True, blank=True, verbose_name="Marca")
+-    
++
+     # Identificadores únicos
+     bar_code = models.CharField(max_length=50, unique=True, null=True, blank=True, verbose_name="Código de Barras")
+-    natura_sku = models.CharField(max_length=50, unique=True, null=True, blank=True, verbose_name="SKU Natura")
+-    
++    supplier_sku = models.CharField(max_length=50, unique=True, null=True, blank=True, verbose_name="SKU do Fornecedor")
++
+     # Detalhes do produto
+     category = models.CharField(max_length=100, default="Geral")
+     description = models.TextField(null=True, blank=True)
+     image_url = models.URLField(max_length=500, null=True, blank=True)
+     min_quantity = models.PositiveIntegerField(default=5)
+-    
+-    # Preço oficial de referência
+-    official_price = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, verbose_name="Preço Site")
+-    
+-    # Controle do scraper
++
++    # Preço de referência (no mercadinho: custo de fornecedor, não preço de site)
++    official_price = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, verbose_name="Preço de Referência")
++
+     last_checked_price = models.DecimalField(max_digits=10, decimal_places=2, null=True)
+     last_checked_at = models.DateTimeField(null=True, blank=True, verbose_name="Última Checagem de Preço")
+     created_at = models.DateTimeField(auto_now_add=True)
+ 
++    # ══════════════════════════════════════════════════════════
++    # 🧾 ESPINHA FISCAL — obrigatória para emitir NFC-e
++    # ══════════════════════════════════════════════════════════
++
++    # NCM: 8 dígitos, classifica a mercadoria. Derivável do GTIN em boa
++    # parte dos casos via Cosmos — preencha automático e peça só confirmação
++    # ao lojista. Ninguém digita NCM de 400 itens à mão.
++    ncm = models.CharField(max_length=8, blank=True, verbose_name="NCM")
++
++    # CEST: só para mercadoria sujeita a Substituição Tributária. Muito
++    # comum em bebida, cigarro, sorvete e higiene — ou seja, metade do
++    # mercadinho. Vazio quando não se aplica.
++    cest = models.CharField(max_length=7, blank=True, verbose_name="CEST")
++
++    # 5102 = venda de mercadoria adquirida de terceiros, dentro do estado.
++    # É o caso de praticamente toda venda de mercadinho.
++    cfop = models.CharField(max_length=4, default='5102', verbose_name="CFOP")
++
++    unidade_com = models.CharField(
++        max_length=6, choices=Unidade.choices, default=Unidade.UN,
++        verbose_name="Unidade Comercial"
++    )
++    origem = models.CharField(
++        max_length=1, choices=Origem.choices, default=Origem.NACIONAL
++    )
++
++    # CSOSN (Simples Nacional) vs CST (Presumido/Real) — qual dos dois vale
++    # depende do Operator.tax_regime. 102 = sem permissão de crédito.
++    csosn = models.CharField(max_length=3, default='102', blank=True, verbose_name="CSOSN")
++    cst_icms = models.CharField(max_length=3, blank=True, verbose_name="CST ICMS")
++    cst_pis = models.CharField(max_length=2, default='49', blank=True)
++    cst_cofins = models.CharField(max_length=2, default='49', blank=True)
++    aliq_icms = models.DecimalField(max_digits=5, decimal_places=2, default=0, verbose_name="Alíquota ICMS %")
++
++    # ══════════════════════════════════════════════════════════
++    # 🏪 OPERACIONAL DE MERCADINHO
++    # ══════════════════════════════════════════════════════════
++
++    # Bebida alcoólica e cigarro. Num totem desassistido isto vira trava:
++    # a geladeira não abre sem validação de idade. É exposição legal do
++    # CLIENTE, então trate como requisito, não como recurso.
++    is_age_restricted = models.BooleanField(
++        default=False, verbose_name="Venda restrita por idade"
++    )
++
++    # Item pesado na balança: o código de barras carrega peso ou preço em
++    # vez de identificar o produto. Ver inventory/barcode.py.
++    requires_scale = models.BooleanField(
++        default=False, verbose_name="Vendido a granel (balança)"
++    )
++    scale_plu = models.PositiveIntegerField(
++        null=True, blank=True, verbose_name="PLU da balança",
++        help_text="Código interno impresso na etiqueta da balança."
++    )
++
++    shelf_life_days = models.PositiveIntegerField(
++        null=True, blank=True, verbose_name="Validade padrão (dias)",
++        help_text="Usado para sugerir a data de vencimento no recebimento."
++    )
++
+     class Meta:
+         verbose_name = 'Produto'
+         verbose_name_plural = 'Produtos'
+         indexes = [
+             models.Index(fields=['bar_code']),
+-            models.Index(fields=['natura_sku']),
++            models.Index(fields=['supplier_sku']),
+             models.Index(fields=['category']),
++            # Consulta do painel: "quais produtos ainda não posso vender
++            # com nota?" — roda a cada abertura da tela de pendências.
++            models.Index(fields=['ncm'], name='idx_product_ncm'),
++            models.Index(fields=['requires_scale', 'scale_plu']),
++        ]
++        constraints = [
++            models.UniqueConstraint(
++                fields=['scale_plu'],
++                condition=models.Q(requires_scale=True, scale_plu__isnull=False),
++                name='uniq_scale_plu_quando_granel',
++            ),
+         ]
+ 
+     def __str__(self):
+         return self.name
+ 
++    @property
++    def is_fiscally_ready(self) -> bool:
++        """
++        Pode entrar numa venda com NFC-e?
++
++        Checagem barata feita ANTES da venda. O caro é descobrir que falta
++        NCM quando a SEFAZ rejeita a nota com o cliente já tendo pago.
++        """
++        return bool(self.ncm and len(self.ncm) == 8 and self.cfop and self.origem)
++
++    @property
++    def fiscal_pendencies(self) -> list:
++        """O que falta, em português, para a tela de pendências."""
++        faltando = []
++        if not self.ncm:
++            faltando.append('NCM')
++        elif len(self.ncm) != 8:
++            faltando.append('NCM inválido (precisa de 8 dígitos)')
++        if not self.cfop:
++            faltando.append('CFOP')
++        if not self.origem:
++            faltando.append('Origem')
++        return faltando
++
+ 
+ class PriceHistory(models.Model):
+     """Histórico de preços coletados pelo scraper"""
+diff --git a/backend/core/inventory/serializers.py b/backend/core/inventory/serializers.py
+index 22871dc..96dcf21 100644
+--- a/backend/core/inventory/serializers.py
++++ b/backend/core/inventory/serializers.py
+@@ -168,7 +168,7 @@ class ProductSerializer(serializers.ModelSerializer):
+     class Meta:
+         model = Product
+         fields = [
+-            'id', 'name', 'bar_code', 'natura_sku', 'image_url', 
++            'id', 'name', 'bar_code', 'supplier_sku', 'image_url', 
+             'category', 'brand', 'description', 'official_price', 'min_quantity'
+         ]
+ 
+@@ -266,7 +266,7 @@ class StockEntrySerializer(serializers.Serializer):
+     # Campos de criação de produto
+     name = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+     category = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+-    natura_sku = serializers.CharField(required=False, allow_blank=True, allow_null=True)
++    supplier_sku = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+     image_url = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+     
+     def validate(self, attrs):
+@@ -305,9 +305,9 @@ class StockEntrySerializer(serializers.Serializer):
+     def _is_new_product_for_store(self, store, attrs):
+         """✅ AUTOMÁTICO: Verifica se é produto novo para este tenant"""
+         bar_code = attrs.get('bar_code')
+-        natura_sku = attrs.get('natura_sku')
++        supplier_sku = attrs.get('supplier_sku')
+         
+-        if not bar_code and not natura_sku:
++        if not bar_code and not supplier_sku:
+             return True
+         
+         existing_item = None
+@@ -318,10 +318,10 @@ class StockEntrySerializer(serializers.Serializer):
+                 product__bar_code=bar_code
+             ).first()
+         
+-        if not existing_item and natura_sku:
++        if not existing_item and supplier_sku:
+             existing_item = InventoryItem.objects.filter(
+                 store=store,
+-                product__natura_sku=natura_sku
++                product__supplier_sku=supplier_sku
+             ).first()
+         
+         return existing_item is None
+diff --git a/backend/core/inventory/tests.py b/backend/core/inventory/tests.py
+deleted file mode 100644
+index 7ce503c..0000000
+--- a/backend/core/inventory/tests.py
++++ /dev/null
+@@ -1,3 +0,0 @@
+-from django.test import TestCase
+-
+-# Create your tests here.
+diff --git a/backend/core/inventory/tests/__init__.py b/backend/core/inventory/tests/__init__.py
+new file mode 100644
+index 0000000..e69de29
+diff --git a/backend/core/inventory/tests/test_barcode.py b/backend/core/inventory/tests/test_barcode.py
+new file mode 100644
+index 0000000..3943f5d
+--- /dev/null
++++ b/backend/core/inventory/tests/test_barcode.py
+@@ -0,0 +1,142 @@
++"""
++Leitura de código de barras e prontidão fiscal.
++
++    python manage.py test inventory.tests.test_barcode
++"""
++from decimal import Decimal
++
++from django.test import TestCase
++
++from inventory.barcode import TipoCodigo, gtin_valido, parse
++from inventory.models import Product
++
++
++class DigitoVerificador(TestCase):
++    def test_aceita_gtins_reais(self):
++        # Coca-Cola 2L, Leite Itambé, Nescau — códigos reais em circulação.
++        for codigo in ('7894900011517', '7896051130215', '7891000100103'):
++            self.assertTrue(gtin_valido(codigo), f'{codigo} deveria ser válido')
++
++    def test_rejeita_digito_trocado(self):
++        self.assertFalse(gtin_valido('7894900011518'))
++
++    def test_rejeita_lixo(self):
++        for ruim in ('', '123', 'abcdefghijklm', '78949000115170000'):
++            self.assertFalse(gtin_valido(ruim))
++
++
++class LeituraDeGtin(TestCase):
++    def test_ean13_e_reconhecido(self):
++        r = parse('7894900011517')
++        self.assertEqual(r.tipo, TipoCodigo.GTIN)
++        self.assertTrue(r.valido)
++        self.assertTrue(r.precisa_catalogo_global)
++
++    def test_upc_a_vira_ean13(self):
++        """
++        UPC-A de 12 dígitos é o mesmo produto que o EAN-13 com zero à
++        esquerda. Sem normalizar, o mesmo item entra duas vezes no catálogo.
++        """
++        r = parse('012345678905')
++        self.assertEqual(r.gtin, '0012345678905')
++        self.assertEqual(len(r.gtin), 13)
++
++    def test_leitura_suja_e_limpa(self):
++        # Leitor USB às vezes entrega espaço ou hífen junto.
++        self.assertTrue(parse(' 789-4900011517 ').valido)
++
++    def test_codigo_invalido_nao_vai_pro_catalogo(self):
++        r = parse('7894900011518')
++        self.assertFalse(r.valido)
++        self.assertFalse(r.precisa_catalogo_global)
++        self.assertIn('verificador', r.erro)
++
++
++class EtiquetaDeBalanca(TestCase):
++    """
++    O caso que quebra o sistema em açougue e hortifruti se não for tratado.
++    """
++
++    def _com_dv(self, doze: str) -> str:
++        from inventory.barcode import digito_verificador
++        return doze + str(digito_verificador(doze))
++
++    def test_prefixo_2_e_lido_como_peso(self):
++        # 2 + 0 | PLU 01234 | 01500 = 1,500 kg
++        codigo = self._com_dv('200123401500')
++        r = parse(codigo)
++        self.assertEqual(r.tipo, TipoCodigo.BALANCA_PESO)
++        self.assertEqual(r.plu, 1234)
++        self.assertEqual(r.peso_kg, Decimal('1.5'))
++        self.assertTrue(r.valido)
++
++    def test_modo_preco_le_reais(self):
++        codigo = self._com_dv('200123401500')
++        r = parse(codigo, modo='preco')
++        self.assertEqual(r.tipo, TipoCodigo.BALANCA_PRECO)
++        self.assertEqual(r.preco, Decimal('15.00'))
++
++    def test_etiqueta_de_balanca_nunca_consulta_catalogo_global(self):
++        """
++        A regra que evita o bug clássico: cada pesagem gera um código
++        diferente, então buscar no catálogo global sempre falharia e a
++        venda travaria.
++        """
++        r = parse(self._com_dv('200123401500'))
++        self.assertFalse(r.precisa_catalogo_global)
++        self.assertIsNone(r.gtin)
++
++    def test_todos_os_prefixos_20_a_29(self):
++        for pref in range(20, 30):
++            r = parse(self._com_dv(f'{pref}0123401500'))
++            self.assertIn(r.tipo, (TipoCodigo.BALANCA_PESO, TipoCodigo.BALANCA_PRECO),
++                          f'prefixo {pref} deveria ser tratado como balança')
++
++    def test_layout_configuravel(self):
++        # Balança com 4 dígitos de PLU e 6 de valor.
++        codigo = self._com_dv('201234012345')
++        r = parse(codigo, digitos_plu=4, digitos_valor=6)
++        self.assertEqual(r.plu, 1234)
++        self.assertEqual(r.peso_kg, Decimal('12.345'))
++
++
++class ProntidaoFiscal(TestCase):
++    """
++    Descobrir que falta NCM na hora em que a SEFAZ rejeita a nota — com o
++    cliente já tendo pago — é caro. Esta checagem é barata e vem antes.
++    """
++
++    def test_produto_recem_escaneado_nao_esta_pronto(self):
++        p = Product.objects.create(name='Refrigerante 2L', bar_code='7894900011517')
++        self.assertFalse(p.is_fiscally_ready)
++        self.assertIn('NCM', p.fiscal_pendencies)
++
++    def test_com_ncm_valido_fica_pronto(self):
++        p = Product.objects.create(
++            name='Refrigerante 2L', bar_code='7894900011517', ncm='22021000'
++        )
++        self.assertTrue(p.is_fiscally_ready)
++        self.assertEqual(p.fiscal_pendencies, [])
++
++    def test_ncm_curto_e_recusado(self):
++        p = Product.objects.create(name='Item', ncm='2202')
++        self.assertFalse(p.is_fiscally_ready)
++        self.assertIn('8 dígitos', ' '.join(p.fiscal_pendencies))
++
++    def test_defaults_servem_para_mercadinho(self):
++        p = Product.objects.create(name='Item')
++        self.assertEqual(p.cfop, '5102')          # venda dentro do estado
++        self.assertEqual(p.origem, '0')           # nacional
++        self.assertEqual(p.csosn, '102')          # Simples, sem crédito
++        self.assertEqual(p.unidade_com, 'UN')
++
++    def test_plu_de_balanca_e_unico(self):
++        from django.db.utils import IntegrityError
++        Product.objects.create(name='Picanha', requires_scale=True, scale_plu=101)
++        with self.assertRaises(IntegrityError):
++            Product.objects.create(name='Alcatra', requires_scale=True, scale_plu=101)
++
++    def test_plu_repetido_e_permitido_se_nao_for_granel(self):
++        # A constraint é parcial: só vale quando requires_scale=True.
++        Product.objects.create(name='A', requires_scale=False, scale_plu=None)
++        Product.objects.create(name='B', requires_scale=False, scale_plu=None)
+diff --git a/backend/core/inventory/views.py b/backend/core/inventory/views.py
+index d2b2ed0..9cf8a54 100644
+--- a/backend/core/inventory/views.py
++++ b/backend/core/inventory/views.py
+@@ -788,7 +788,7 @@ class StockEntryView(APIView):
+         try:
+             with transaction.atomic():
+                 # Conversão de strings vazias para None
+-                raw_sku = data.get('natura_sku')
++                raw_sku = data.get('supplier_sku')
+                 sku_input = raw_sku if raw_sku and str(raw_sku).strip() != "" else None
+                 
+                 raw_barcode = data.get('bar_code')
+@@ -809,7 +809,7 @@ class StockEntryView(APIView):
+                     product = Product.objects.filter(bar_code=barcode_input).first()
+                     
+                 if not product and sku_input:
+-                    product = Product.objects.filter(natura_sku=sku_input).first()
++                    product = Product.objects.filter(supplier_sku=sku_input).first()
+                 
+                 print(f"Produto encontrado: {product}")
+                 
+@@ -826,9 +826,9 @@ class StockEntryView(APIView):
+                             product.bar_code = barcode_input
+                             updated = True
+                             
+-                        if sku_input and not product.natura_sku:
+-                            if not Product.objects.exclude(id=product.id).filter(natura_sku=sku_input).exists():
+-                                product.natura_sku = sku_input
++                        if sku_input and not product.supplier_sku:
++                            if not Product.objects.exclude(id=product.id).filter(supplier_sku=sku_input).exists():
++                                product.supplier_sku = sku_input
+                                 updated = True
+                         
+                         if name_input != "Produto Novo" and product.name != name_input:
+@@ -846,7 +846,7 @@ class StockEntryView(APIView):
+                     print("Criando novo produto local")
+                     product = Product.objects.create(
+                         bar_code=barcode_input,
+-                        natura_sku=sku_input,
++                        supplier_sku=sku_input,
+                         name=name_input,
+                         category=category_input,
+                         official_price=data.get('sale_price', 0),
+@@ -1141,7 +1141,7 @@ def lookup_product(request):
+     print(f"   ↳ Busca Numérica detectada. Verificando base local...")
+     
+     if not force_remote:
+-        local = Product.objects.filter(Q(bar_code=query) | Q(natura_sku=query)).first()
++        local = Product.objects.filter(Q(bar_code=query) | Q(supplier_sku=query)).first()
+         if local:
+             print(f"   ✅ Encontrado no banco local (Match Exato): {local.name}")
+             return Response({"found": True, "source": "local", "data": ProductSerializer(local).data})
+@@ -1153,27 +1153,27 @@ def lookup_product(request):
+         online_data = None
+         
+         if online_data:
+-            sku_found = online_data.get('natura_sku')
++            sku_found = online_data.get('supplier_sku')
+             name_found = online_data.get('name')
+             
+             # Salvar resultados adicionais (se a busca trouxe vários)
+             all_results = online_data.get('all_results', [])
+             for p in all_results:
+                 Product.objects.update_or_create(
+-                    natura_sku=p['natura_sku'],
++                    supplier_sku=p['supplier_sku'],
+                     defaults={'name': p['name'], 'official_price': p.get('sale_price', 0), 'category': p.get('category', 'Geral'), 'last_checked_at': timezone.now()}
+                 )
+             
+             # CASO 1: TEM SKU (Google ou Natura achou)
+             if sku_found:
+                 try:
+-                    product = Product.objects.get(natura_sku=sku_found)
++                    product = Product.objects.get(supplier_sku=sku_found)
+                     product.bar_code = query
+                     product.save()
+                     print(f"   🧠 APRENDIZADO: Vinculado EAN {query} ao SKU existente {sku_found}")
+                 except Product.DoesNotExist:
+                     product = Product.objects.create(
+-                        natura_sku=sku_found, bar_code=query, name=name_found,
++                        supplier_sku=sku_found, bar_code=query, name=name_found,
+                         official_price=online_data.get('sale_price', 0), category=online_data.get('category', 'Geral'), description=online_data.get('description', '')
+                     )
+                     print(f"   🧠 APRENDIZADO: Novo produto criado (SKU {sku_found})")
+diff --git a/frontend/src/components/InventorySearchModal.tsx b/frontend/src/components/InventorySearchModal.tsx
+index d41ca23..ca1e005 100644
+--- a/frontend/src/components/InventorySearchModal.tsx
++++ b/frontend/src/components/InventorySearchModal.tsx
+@@ -37,7 +37,7 @@ export default function InventorySearchModal({ isOpen, onClose, onSelect }: Inve
+     const q = query.toLowerCase();
+     const name = (item.product?.name || item.product_name || "").toLowerCase();
+     const barcode = item.product?.bar_code || item.barcode || "";
+-    const sku = (item.product?.natura_sku || item.sku || "").toLowerCase();
++    const sku = (item.product?.supplier_sku || item.sku || "").toLowerCase();
+ 
+     return name.includes(q) || barcode.includes(q) || sku.includes(q);
+   });
+@@ -91,7 +91,7 @@ export default function InventorySearchModal({ isOpen, onClose, onSelect }: Inve
+                   const qty = item.total_quantity ?? item.quantity ?? 0;
+                   const name = item.product?.name || item.product_name || "Sem Nome";
+                   const barcode = item.product?.bar_code || item.barcode;
+-                  const sku = item.product?.natura_sku || item.sku;
++                  const sku = item.product?.supplier_sku || item.sku;
+                   const image = item.product?.image_url || item.image_url;
+ 
+                   return (
+diff --git a/frontend/src/components/ProductSearchModal.tsx b/frontend/src/components/ProductSearchModal.tsx
+index 3149808..369bae9 100644
+--- a/frontend/src/components/ProductSearchModal.tsx
++++ b/frontend/src/components/ProductSearchModal.tsx
+@@ -10,7 +10,7 @@ import { productService } from "../lib/productService";
+ interface Product {
+   id?: number;
+   name: string;
+-  natura_sku?: string;
++  supplier_sku?: string;
+   bar_code?: string;
+   category?: string;
+   official_price?: number;
+@@ -66,7 +66,7 @@ export default function ProductSearchModal({ isOpen, onClose, onSelect }: Props)
+         list = allProducts.filter(
+           (p) =>
+             p.name.toLowerCase().includes(qLower) ||
+-            (p.natura_sku && p.natura_sku.toLowerCase().includes(qLower)) ||
++            (p.supplier_sku && p.supplier_sku.toLowerCase().includes(qLower)) ||
+             (p.bar_code && p.bar_code.includes(qLower))
+         );
+       }
+@@ -168,7 +168,7 @@ export default function ProductSearchModal({ isOpen, onClose, onSelect }: Props)
+                   <div className="flex-1 min-w-0">
+                     <p className="font-bold text-foreground text-sm truncate">{item.name}</p>
+                     <div className="flex gap-2 text-xs text-brand-rose/70 mt-1">
+-                      {item.natura_sku && <span>SKU: {item.natura_sku}</span>}
++                      {item.supplier_sku && <span>SKU: {item.supplier_sku}</span>}
+                       {item.official_price && (
+                         <span className="text-brand font-medium">
+                           {formatMoney(item.official_price)}
+diff --git a/frontend/src/hooks/useStockEntry.ts b/frontend/src/hooks/useStockEntry.ts
+index d3c5841..1d822ec 100644
+--- a/frontend/src/hooks/useStockEntry.ts
++++ b/frontend/src/hooks/useStockEntry.ts
+@@ -12,7 +12,7 @@ export interface StockEntryData {
+   expiration_date?: string | null;
+   name?: string;
+   category?: string;
+-  natura_sku?: string | null;
++  supplier_sku?: string | null;
+   brand?: string; // ✅ JÁ EXISTE - mantém
+   // campos complementares visuais
+   expiry_photo_url?: string | null;
+@@ -33,7 +33,7 @@ export function useStockEntry() {
+       // 🔥 CORREÇÃO: Incluir campo brand no payload
+       const response = await stockApi.create({
+         bar_code: data.bar_code,
+-        natura_sku: data.natura_sku || "",
++        supplier_sku: data.supplier_sku || "",
+         name: data.name || "Produto sem nome",
+         category: data.category || "Geral",
+         brand: data.brand || "", // ✅ ADICIONAR este campo
+@@ -70,7 +70,7 @@ export function useStockEntry() {
+       // ✅ Log detalhado para debug
+       console.error("Dados enviados:", {
+         bar_code: data.bar_code,
+-        natura_sku: data.natura_sku,
++        supplier_sku: data.supplier_sku,
+         name: data.name,
+         category: data.category,
+         brand: data.brand,
+diff --git a/frontend/src/lib/api.ts b/frontend/src/lib/api.ts
+index 160591b..a891afc 100644
+--- a/frontend/src/lib/api.ts
++++ b/frontend/src/lib/api.ts
+@@ -163,7 +163,7 @@ export interface InventoryItem {
+     id: number | string;
+     name: string;
+     bar_code: string;
+-    natura_sku: string;
++    supplier_sku: string;
+     category: string;
+     image_url: string;
+     official_price: number;
+@@ -601,7 +601,7 @@ export interface StorefrontItem {
+     id: number | string;
+     name: string;
+     bar_code: string;
+-    natura_sku?: string;
++    supplier_sku?: string;
+     category: string;
+     brand?: string | null;
+     image_url?: string;
+diff --git a/frontend/src/lib/productService.ts b/frontend/src/lib/productService.ts
+index 032cf72..7c21dab 100644
+--- a/frontend/src/lib/productService.ts
++++ b/frontend/src/lib/productService.ts
+@@ -5,7 +5,7 @@ export interface Product {
+   id?: number;
+   name: string;
+   bar_code: string;
+-  natura_sku?: string;
++  supplier_sku?: string;
+   category: string;
+   price: number;
+   sale_price?: number;
+@@ -132,7 +132,7 @@ export const productService = {
+ 
+   // 3.2 NOVO: BUSCA POR SKU NATURA
+   lookupBySku: async (sku: string) => {
+-    // O backend trata 'q' ou 'ean'. Se passar SKU no 'q', ele busca em 'natura_sku'
++    // O backend trata 'q' ou 'ean'. Se passar SKU no 'q', ele busca em 'supplier_sku'
+     return apiRequest<ProductLookupResponse>(`/api/products/lookup/?q=${sku}`);
+   },
+ 
+@@ -149,7 +149,7 @@ export const productService = {
+         expiration_date: data.expiration_date,
+         // Envia nome/sku para criação automática caso não exista
+         name: data.name,
+-        natura_sku: data.natura_sku,
++        supplier_sku: data.supplier_sku,
+         category: data.category
+       })
+     });
+diff --git a/frontend/src/pages/AddProduct.tsx b/frontend/src/pages/AddProduct.tsx
+index 1188a7b..03f6ea3 100644
+--- a/frontend/src/pages/AddProduct.tsx
++++ b/frontend/src/pages/AddProduct.tsx
+@@ -40,7 +40,7 @@ interface EntryData {
+   bar_code: string;
+   name: string;
+   category: string;
+-  natura_sku: string;
++  supplier_sku: string;
+   image_url: string;
+   official_price: number;
+   sale_price: number;
+@@ -75,7 +75,7 @@ const createEmptyEntry = (): EntryData => ({
+   bar_code: "",
+   name: "",
+   category: "Perfumaria",
+-  natura_sku: "",
++  supplier_sku: "",
+   image_url: "",
+   official_price: 0,
+   sale_price: 0,
+@@ -248,7 +248,7 @@ export default function AddProduct() {
+           name: remote?.name || resData?.name || prev.name,
+           sale_price: remote?.sale_price || resData?.sale_price || prev.sale_price,
+           cost_price: prev.cost_price,
+-          natura_sku: remote?.natura_sku || resData?.natura_sku || prev.natura_sku,
++          supplier_sku: remote?.supplier_sku || resData?.supplier_sku || prev.supplier_sku,
+           image_url: remote?.image_url || resData?.image_url || prev.image_url,
+           category: remote?.category || resData?.category || prev.category,
+           official_price: remote?.official_price || resData?.official_price || 0,
+@@ -284,7 +284,7 @@ export default function AddProduct() {
+       bar_code: product.bar_code || product.barcode || prev.bar_code,
+       name: product.name,
+       category: product.category || prev.category,
+-      natura_sku: product.natura_sku || product.sku || "",
++      supplier_sku: product.supplier_sku || product.sku || "",
+       image_url: product.image_url || "",
+       official_price: product.official_price || 0,
+       sale_price: product.official_price || prev.sale_price,
+@@ -327,7 +327,7 @@ export default function AddProduct() {
+         bar_code: data.bar_code.trim(),
+         name: data.name || "Produto sem nome",
+         category: data.category,
+-        natura_sku: data.natura_sku,
++        supplier_sku: data.supplier_sku,
+         expiration_date: data.expiry_date,
+         expiry_photo_url: data.expiry_photo_url,
+         quantity: data.quantity,
+@@ -784,8 +784,8 @@ export default function AddProduct() {
+                   <div>
+                     <label className="text-sm font-medium text-foreground">SKU Natura</label>
+                     <input
+-                      value={data.natura_sku}
+-                      onChange={(e) => setData((p) => ({ ...p, natura_sku: e.target.value }))}
++                      value={data.supplier_sku}
++                      onChange={(e) => setData((p) => ({ ...p, supplier_sku: e.target.value }))}
+                       className="mt-1 w-full rounded-lg border px-3 py-2 text-sm outline-none"
+                       placeholder="Opcional"
+                     />
+@@ -900,7 +900,7 @@ export default function AddProduct() {
+ 
+                       <div className="space-y-2 rounded-lg bg-secondary/50 p-4 mb-4">
+                         <Row label="EAN" value={data.bar_code} />
+-                        <Row label="SKU" value={data.natura_sku || "—"} />
++                        <Row label="SKU" value={data.supplier_sku || "—"} />
+                         {data.brand && <Row label="Marca" value={data.brand} />}
+                         <Row label="Lote" value={data.batch_code || "—"} />
+                         <Row label="Validade" value={data.expiry_date || "Não informada"} />
+diff --git a/frontend/src/pages/ProductForm.tsx b/frontend/src/pages/ProductForm.tsx
+index 5d8f3c5..749dd10 100644
+--- a/frontend/src/pages/ProductForm.tsx
++++ b/frontend/src/pages/ProductForm.tsx
+@@ -21,7 +21,7 @@ const CATEGORIES = [
+ const emptyProduct: Product = {
+   name: "",
+   bar_code: "",
+-  natura_sku: "",
++  supplier_sku: "",
+   category: "Perfumaria",
+   price: 0,
+   sale_price: 0,
+@@ -65,7 +65,7 @@ export default function ProductForm() {
+             ...prev,
+             name: item.product?.name || item.product_name || "",
+             bar_code: item.product?.bar_code || item.barcode || "",
+-            natura_sku: item.product?.natura_sku || item.sku || "",
++            supplier_sku: item.product?.supplier_sku || item.sku || "",
+             category: item.product?.category || item.category || "Outro",
+             image_url: item.product?.image_url || item.image_url || "",
+             price: item.sale_price || item.product?.official_price || 0,
+@@ -108,14 +108,14 @@ export default function ProductForm() {
+       ...prev,
+       name: suggestion.name,
+       price: suggestion.official_price || prev.price,
+-      natura_sku: suggestion.natura_sku,
++      supplier_sku: suggestion.supplier_sku,
+       description: suggestion.description,
+       image_url: suggestion.image_url,
+     }));
+     setShowSuggestions(false);
+     toast({
+       title: "Produto Vinculado!",
+-      description: `SKU ${suggestion.natura_sku} carregado.`,
++      description: `SKU ${suggestion.supplier_sku} carregado.`,
+     });
+   };
+ 
+@@ -149,7 +149,7 @@ export default function ProductForm() {
+             ...prev,
+             name: remote?.name || data?.name || prev.name,
+             price: remote?.sale_price || data?.sale_price || prev.price,
+-            natura_sku: remote?.natura_sku || data?.natura_sku || prev.natura_sku,
++            supplier_sku: remote?.supplier_sku || data?.supplier_sku || prev.supplier_sku,
+             description: remote?.description || data?.description || prev.description,
+             image_url: remote?.image_url || data?.image_url || prev.image_url,
+             bar_code: ean,
+@@ -201,7 +201,7 @@ export default function ProductForm() {
+             .patch(`/products/${prodId}/`, {
+               name: form.name,
+               bar_code: form.bar_code,
+-              natura_sku: form.natura_sku,
++              supplier_sku: form.supplier_sku,
+               category: form.category,
+               image_url: form.image_url,
+             })
+@@ -223,7 +223,7 @@ export default function ProductForm() {
+           bar_code: form.bar_code,
+           name: form.name,
+           category: form.category,
+-          natura_sku: form.natura_sku,
++          supplier_sku: form.supplier_sku,
+           quantity: form.quantity,
+           cost_price: form.cost_price,
+           sale_price: form.price,
+@@ -391,8 +391,8 @@ export default function ProductForm() {
+               </label>
+               <input
+                 type="text"
+-                value={form.natura_sku || ""}
+-                onChange={(e) => handleChange("natura_sku", e.target.value)}
++                value={form.supplier_sku || ""}
++                onChange={(e) => handleChange("supplier_sku", e.target.value)}
+                 placeholder="Código do produto no catálogo"
+                 className="w-full border border-input rounded-lg px-3 py-2.5 mt-1.5 bg-background outline-none focus:border-brand"
+               />
+diff --git a/frontend/src/pages/ProductList.tsx b/frontend/src/pages/ProductList.tsx
+index 9dedbae..c29fd5e 100644
+--- a/frontend/src/pages/ProductList.tsx
++++ b/frontend/src/pages/ProductList.tsx
+@@ -176,7 +176,7 @@ export default function ProductList() {
+     const qty = item.total_quantity ?? item.quantity ?? 0;
+     const prodName = item.product?.name || item.product_name || "";
+     const prodBarcode = item.product?.bar_code || item.barcode || "";
+-    const prodSku = item.product?.natura_sku || item.sku || "";
++    const prodSku = item.product?.supplier_sku || item.sku || "";
+     const prodCat = item.product?.category || item.category || "";
+ 
+     const textMatch =
+diff --git a/frontend/src/pages/StockWizard.tsx b/frontend/src/pages/StockWizard.tsx
+index 0de1dcd..11c1b4e 100644
+--- a/frontend/src/pages/StockWizard.tsx
++++ b/frontend/src/pages/StockWizard.tsx
+@@ -86,7 +86,7 @@ export default function StockWizard() {
+             existing.product?.category || existing.category || p.category,
+           image_url:
+             existing.product?.image_url || existing.image_url || null,
+-          sku: existing.product?.natura_sku || existing.sku || null,
++          sku: existing.product?.supplier_sku || existing.sku || null,
+           official_price:
+             existing.product?.official_price ||
+             existing.official_price ||
+@@ -210,7 +210,7 @@ export default function StockWizard() {
+         bar_code: data.barcode.trim(),
+         name: data.product_name || "Produto sem nome",
+         category: data.category,
+-        natura_sku: data.sku,
++        supplier_sku: data.sku,
+         expiration_date: data.expiry_date,
+         expiry_photo_url: data.expiry_photo_url,
+         quantity: data.quantity,
+diff --git a/mobile/src/lib/productService.ts b/mobile/src/lib/productService.ts
+index c7b1950..a89c1cd 100644
+--- a/mobile/src/lib/productService.ts
++++ b/mobile/src/lib/productService.ts
+@@ -2,7 +2,7 @@ export interface Product {
+   id?: number;
+   name: string;
+   bar_code: string;
+-  natura_sku?: string; // <--- ADICIONE ISTO
++  supplier_sku?: string; // <--- ADICIONE ISTO
+   
+   category: string;
+   price: number;
+diff --git a/mobile/src/screens/ProductFormScreen.tsx b/mobile/src/screens/ProductFormScreen.tsx
+index f7b346f..2258fef 100644
+--- a/mobile/src/screens/ProductFormScreen.tsx
++++ b/mobile/src/screens/ProductFormScreen.tsx
+@@ -13,7 +13,7 @@ const CATEGORIES = ["Perfumaria", "Corpo", "Rosto", "Cabelos", "Maquiagem", "Inf
+ const emptyProduct: Product = {
+   name: "",
+   bar_code: "",
+-  natura_sku: "",
++  supplier_sku: "",
+   category: "Perfumaria",
+   price: 0,
+   sale_price: 0,
+diff --git a/mobile/src/screens/ProductListScreen.tsx b/mobile/src/screens/ProductListScreen.tsx
+index f6e3e9d..a70a075 100644
+--- a/mobile/src/screens/ProductListScreen.tsx
++++ b/mobile/src/screens/ProductListScreen.tsx
+@@ -101,7 +101,7 @@ export default function ProductListScreen() {
+             </View>
+             
+             <Text style={styles.productMeta} numberOfLines={1}>
+-                {item.category} • SKU: {item.natura_sku || '-'}
++                {item.category} • SKU: {item.supplier_sku || '-'}
+             </Text>
+ 
+             <View style={[styles.rowBetween, { marginTop: 8 }]}>

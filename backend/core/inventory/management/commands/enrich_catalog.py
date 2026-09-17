@@ -215,7 +215,7 @@ class Command(BaseCommand):
 
                         # 🚀 SALVAMENTO NO BANCO DE DADOS (COM BRAND E CATEGORY INTELIGENTE)
                         product, created = Product.objects.get_or_create(
-                            natura_sku=str(sku),
+                            supplier_sku=str(sku),
                             defaults={
                                 'name': name[:255],
                                 'brand': brand,                        # 🚀 A MARCA

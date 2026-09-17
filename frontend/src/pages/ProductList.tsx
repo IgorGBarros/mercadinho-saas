@@ -176,7 +176,7 @@ export default function ProductList() {
     const qty = item.total_quantity ?? item.quantity ?? 0;
     const prodName = item.product?.name || item.product_name || "";
     const prodBarcode = item.product?.bar_code || item.barcode || "";
-    const prodSku = item.product?.natura_sku || item.sku || "";
+    const prodSku = item.product?.supplier_sku || item.sku || "";
     const prodCat = item.product?.category || item.category || "";
 
     const textMatch =

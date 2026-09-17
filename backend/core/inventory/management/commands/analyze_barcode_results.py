@@ -23,7 +23,7 @@ class Command(BaseCommand):
         parser.add_argument('--delay', type=float, default=8.0, help='Delay entre buscas')
         parser.add_argument('--dry-run', action='store_true', help='Apenas simular')
         parser.add_argument('--skip-existing', action='store_true', help='Pular produtos que já têm código de barras')
-        parser.add_argument('--test-product', type=str, help='Testar com um produto específico (natura_sku)')
+        parser.add_argument('--test-product', type=str, help='Testar com um produto específico (supplier_sku)')
     
     def handle(self, *args, **options):
         brand = options['brand']
@@ -38,7 +38,7 @@ class Command(BaseCommand):
         # Se for teste de produto específico
         if test_product:
             try:
-                product = Product.objects.get(natura_sku=test_product)
+                product = Product.objects.get(supplier_sku=test_product)
                 self.test_single_product(product, delay, dry_run)
                 return
             except Product.DoesNotExist:
@@ -76,7 +76,7 @@ class Command(BaseCommand):
                     if result['cloudflare_blocked']:
                         stats['cloudflare_blocks'] += 1
                         self.stdout.write(self.style.ERROR(
-                            f"🛡️ [{stats['processed']}/{limit}] {product.natura_sku} - Bloqueado pelo Cloudflare"
+                            f"🛡️ [{stats['processed']}/{limit}] {product.supplier_sku} - Bloqueado pelo Cloudflare"
                         ))
                     elif result['found']:
                         stats['found_barcodes'] += 1
@@ -91,13 +91,13 @@ class Command(BaseCommand):
                             stats['low_confidence'] += 1
                         
                         self.stdout.write(self.style.SUCCESS(
-                            f"✅ [{stats['processed']}/{limit}] {product.natura_sku} - "
+                            f"✅ [{stats['processed']}/{limit}] {product.supplier_sku} - "
                             f"GTIN: {result['gtin']} ({confidence}) - "
                             f"Termo: '{result.get('search_term', 'N/A')}'"
                         ))
                     else:
                         self.stdout.write(
-                            f"❌ [{stats['processed']}/{limit}] {product.natura_sku} - "
+                            f"❌ [{stats['processed']}/{limit}] {product.supplier_sku} - "
                             f"Sem GTIN (termo: '{result.get('search_term', 'N/A')}')"
                         )
                     
@@ -108,7 +108,7 @@ class Command(BaseCommand):
                 except Exception as e:
                     stats['errors'] += 1
                     self.stdout.write(self.style.ERROR(
-                        f"❌ [{stats['processed'] + 1}/{limit}] Erro no produto {product.natura_sku}: {e}"
+                        f"❌ [{stats['processed'] + 1}/{limit}] Erro no produto {product.supplier_sku}: {e}"
                     ))
                     time.sleep(delay * 1.5)
         
@@ -116,7 +116,7 @@ class Command(BaseCommand):
     
     def test_single_product(self, product, delay, dry_run):
         """Testa busca para um produto específico"""
-        self.stdout.write(f"🧪 Testando produto: {product.natura_sku} - {product.name}")
+        self.stdout.write(f"🧪 Testando produto: {product.supplier_sku} - {product.name}")
         
         with SB(uc=True, headless=False, page_load_strategy="eager") as sb:
             result = self.search_product_with_tracking(sb, product, delay, dry_run, debug=True)
@@ -183,7 +183,7 @@ class Command(BaseCommand):
             page_source = sb.get_page_source()
             
             if debug:
-                with open(f"debug_tracked_{product.natura_sku}.html", "w", encoding="utf-8") as f:
+                with open(f"debug_tracked_{product.supplier_sku}.html", "w", encoding="utf-8") as f:
                     f.write(page_source)
                 self.stdout.write(f"   💾 HTML salvo para debug")
             
@@ -223,7 +223,7 @@ class Command(BaseCommand):
                     'source': f'cosmos_tracked_{confidence}',
                     'matched': True,
                     # ✅ CAMPOS DE RASTREAMENTO
-                    'searched_product_sku': product.natura_sku,
+                    'searched_product_sku': product.supplier_sku,
                     'searched_product_name': product.name,
                     'search_term_used': search_term,
                     'confidence_level': confidence
@@ -232,7 +232,7 @@ class Command(BaseCommand):
             
             # Se já existia, atualizar campos de rastreamento
             if not created:
-                obj.searched_product_sku = product.natura_sku
+                obj.searched_product_sku = product.supplier_sku
                 obj.searched_product_name = product.name
                 obj.search_term_used = search_term
                 obj.confidence_level = confidence
@@ -253,7 +253,7 @@ class Command(BaseCommand):
                             'description': f"[ALT] {product.name}",  # Marcar como alternativa
                             'source': f'cosmos_alternative_{confidence}',
                             'matched': False,  # Não matched automaticamente
-                            'searched_product_sku': product.natura_sku,
+                            'searched_product_sku': product.supplier_sku,
                             'searched_product_name': product.name,
                             'search_term_used': search_term,
                             'confidence_level': 'alternative'
@@ -266,7 +266,7 @@ class Command(BaseCommand):
                 product.save(update_fields=['bar_code'])
             
         except Exception as e:
-            logger.error(f"Erro ao salvar GTIN {best_gtin} para produto {product.natura_sku}: {e}")
+            logger.error(f"Erro ao salvar GTIN {best_gtin} para produto {product.supplier_sku}: {e}")
     
     # ... (resto dos métodos permanecem iguais: extract_gtins_with_context, prepare_search_term, etc.)
     

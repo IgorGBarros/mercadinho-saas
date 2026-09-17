@@ -13,7 +13,7 @@ const CATEGORIES = ["Perfumaria", "Corpo", "Rosto", "Cabelos", "Maquiagem", "Inf
 const emptyProduct: Product = {
   name: "",
   bar_code: "",
-  natura_sku: "",
+  supplier_sku: "",
   category: "Perfumaria",
   price: 0,
   sale_price: 0,

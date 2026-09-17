@@ -168,7 +168,7 @@ class ProductSerializer(serializers.ModelSerializer):
     class Meta:
         model = Product
         fields = [
-            'id', 'name', 'bar_code', 'natura_sku', 'image_url', 
+            'id', 'name', 'bar_code', 'supplier_sku', 'image_url', 
             'category', 'brand', 'description', 'official_price', 'min_quantity'
         ]
 
@@ -266,7 +266,7 @@ class StockEntrySerializer(serializers.Serializer):
     # Campos de criação de produto
     name = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     category = serializers.CharField(required=False, allow_blank=True, allow_null=True)
-    natura_sku = serializers.CharField(required=False, allow_blank=True, allow_null=True)
+    supplier_sku = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     image_url = serializers.CharField(required=False, allow_blank=True, allow_null=True)
     
     def validate(self, attrs):
@@ -305,9 +305,9 @@ class StockEntrySerializer(serializers.Serializer):
     def _is_new_product_for_store(self, store, attrs):
         """✅ AUTOMÁTICO: Verifica se é produto novo para este tenant"""
         bar_code = attrs.get('bar_code')
-        natura_sku = attrs.get('natura_sku')
+        supplier_sku = attrs.get('supplier_sku')
         
-        if not bar_code and not natura_sku:
+        if not bar_code and not supplier_sku:
             return True
         
         existing_item = None
@@ -318,10 +318,10 @@ class StockEntrySerializer(serializers.Serializer):
                 product__bar_code=bar_code
             ).first()
         
-        if not existing_item and natura_sku:
+        if not existing_item and supplier_sku:
             existing_item = InventoryItem.objects.filter(
                 store=store,
-                product__natura_sku=natura_sku
+                product__supplier_sku=supplier_sku
             ).first()
         
         return existing_item is None

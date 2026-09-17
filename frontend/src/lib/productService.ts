@@ -5,7 +5,7 @@ export interface Product {
   id?: number;
   name: string;
   bar_code: string;
-  natura_sku?: string;
+  supplier_sku?: string;
   category: string;
   price: number;
   sale_price?: number;
@@ -132,7 +132,7 @@ export const productService = {
 
   // 3.2 NOVO: BUSCA POR SKU NATURA
   lookupBySku: async (sku: string) => {
-    // O backend trata 'q' ou 'ean'. Se passar SKU no 'q', ele busca em 'natura_sku'
+    // O backend trata 'q' ou 'ean'. Se passar SKU no 'q', ele busca em 'supplier_sku'
     return apiRequest<ProductLookupResponse>(`/api/products/lookup/?q=${sku}`);
   },
 
@@ -149,7 +149,7 @@ export const productService = {
         expiration_date: data.expiration_date,
         // Envia nome/sku para criação automática caso não exista
         name: data.name,
-        natura_sku: data.natura_sku,
+        supplier_sku: data.supplier_sku,
         category: data.category
       })
     });

@@ -23,7 +23,7 @@ class Command(BaseCommand):
         parser.add_argument('--delay', type=float, default=8.0, help='Delay entre buscas')
         parser.add_argument('--dry-run', action='store_true', help='Apenas simular')
         parser.add_argument('--skip-existing', action='store_true', help='Pular produtos que já têm código de barras')
-        parser.add_argument('--test-product', type=str, help='Testar com um produto específico (natura_sku)')
+        parser.add_argument('--test-product', type=str, help='Testar com um produto específico (supplier_sku)')
     
     def handle(self, *args, **options):
         brand = options['brand']
@@ -38,7 +38,7 @@ class Command(BaseCommand):
         # Se for teste de produto específico
         if test_product:
             try:
-                product = Product.objects.get(natura_sku=test_product)
+                product = Product.objects.get(supplier_sku=test_product)
                 self.test_single_product(product, delay, dry_run)
                 return
             except Product.DoesNotExist:
@@ -92,7 +92,7 @@ class Command(BaseCommand):
                     if result['cloudflare_blocked']:
                         stats['cloudflare_blocks'] += 1
                         self.stdout.write(self.style.ERROR(
-                            f"🛡️ [{stats['processed']}/{limit}] {product.natura_sku} - Bloqueado pelo Cloudflare"
+                            f"🛡️ [{stats['processed']}/{limit}] {product.supplier_sku} - Bloqueado pelo Cloudflare"
                         ))
                     elif result['found']:
                         stats['found_barcodes'] += 1
@@ -112,12 +112,12 @@ class Command(BaseCommand):
                         alt_info = f" +{result.get('alternatives_saved', 0)}alt" if result.get('alternatives_saved', 0) > 0 else ""
                         
                         self.stdout.write(self.style.SUCCESS(
-                            f"✅ [{stats['processed']}/{limit}] {product.natura_sku} - "
+                            f"✅ [{stats['processed']}/{limit}] {product.supplier_sku} - "
                             f"GTIN: {result['gtin']} ({confidence}){alt_info}"
                         ))
                     else:
                         self.stdout.write(
-                            f"❌ [{stats['processed']}/{limit}] {product.natura_sku} - "
+                            f"❌ [{stats['processed']}/{limit}] {product.supplier_sku} - "
                             f"Sem GTIN encontrado"
                         )
                     
@@ -128,7 +128,7 @@ class Command(BaseCommand):
                 except Exception as e:
                     stats['errors'] += 1
                     self.stdout.write(self.style.ERROR(
-                        f"❌ [{stats['processed'] + 1}/{limit}] Erro no produto {product.natura_sku}: {e}"
+                        f"❌ [{stats['processed'] + 1}/{limit}] Erro no produto {product.supplier_sku}: {e}"
                     ))
                     time.sleep(delay * 1.5)
         
@@ -136,7 +136,7 @@ class Command(BaseCommand):
     
     def test_single_product(self, product, delay, dry_run):
         """Testa busca para um produto específico"""
-        self.stdout.write(f"🧪 Testando produto: {product.natura_sku} - {product.name}")
+        self.stdout.write(f"🧪 Testando produto: {product.supplier_sku} - {product.name}")
         
         with SB(uc=True, headless=False, page_load_strategy="eager") as sb:
             result = self.search_product_smart(sb, product, delay, dry_run, debug=True)
@@ -205,7 +205,7 @@ class Command(BaseCommand):
             page_source = sb.get_page_source()
             
             if debug:
-                with open(f"debug_search_{product.natura_sku}.html", "w", encoding="utf-8") as f:
+                with open(f"debug_search_{product.supplier_sku}.html", "w", encoding="utf-8") as f:
                     f.write(page_source)
                 self.stdout.write(f"   💾 HTML salvo para debug")
             
@@ -462,7 +462,7 @@ class Command(BaseCommand):
         alternatives_saved = 0
         
         try:
-            print(f"🔄 Salvando GTIN {best_gtin} para produto {product.natura_sku}")
+            print(f"🔄 Salvando GTIN {best_gtin} para produto {product.supplier_sku}")
             
             # ✅ 1. SALVAR APENAS O MELHOR GTIN
             obj, created = ExternalBarcodeCatalog.objects.get_or_create(
@@ -472,7 +472,7 @@ class Command(BaseCommand):
                     'description': product.name,
                     'source': f'cosmos_optimized_{confidence}',
                     'matched': True,
-                    'searched_product_sku': product.natura_sku,
+                    'searched_product_sku': product.supplier_sku,
                     'searched_product_name': product.name,
                     'search_term_used': search_term,
                     'confidence_level': confidence
@@ -481,7 +481,7 @@ class Command(BaseCommand):
             
             # Se já existia, atualizar
             if not created:
-                obj.searched_product_sku = product.natura_sku
+                obj.searched_product_sku = product.supplier_sku
                 obj.searched_product_name = product.name
                 obj.search_term_used = search_term
                 obj.confidence_level = confidence
@@ -516,7 +516,7 @@ class Command(BaseCommand):
                                     'description': f"[ALT-{score}] {product.name}",
                                     'source': f'cosmos_alt_relevant',
                                     'matched': False,
-                                    'searched_product_sku': product.natura_sku,
+                                    'searched_product_sku': product.supplier_sku,
                                     'searched_product_name': product.name,
                                     'search_term_used': search_term,
                                     'confidence_level': f'alternative_{score}'
@@ -535,15 +535,15 @@ class Command(BaseCommand):
                 if not product.bar_code:  # ← PROTEÇÃO ADICIONADA
                     product.bar_code = best_gtin
                     product.save(update_fields=['bar_code'])
-                    print(f"✅ Código de barras salvo no produto {product.natura_sku}")
+                    print(f"✅ Código de barras salvo no produto {product.supplier_sku}")
                 else:
-                    print(f"🔒 Produto {product.natura_sku} já tem código de barras: {product.bar_code} (não sobrescrito)")
+                    print(f"🔒 Produto {product.supplier_sku} já tem código de barras: {product.bar_code} (não sobrescrito)")
             else:
                 print(f"⚠️ Confiança baixa ({confidence}) - não salvo no produto")
             
         except Exception as e:
             print(f"❌ Erro ao salvar GTIN {best_gtin}: {e}")
-            logger.error(f"Erro ao salvar GTIN {best_gtin} para produto {product.natura_sku}: {e}")
+            logger.error(f"Erro ao salvar GTIN {best_gtin} para produto {product.supplier_sku}: {e}")
         
         return alternatives_saved
     

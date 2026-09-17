@@ -10,7 +10,7 @@ import { productService } from "../lib/productService";
 interface Product {
   id?: number;
   name: string;
-  natura_sku?: string;
+  supplier_sku?: string;
   bar_code?: string;
   category?: string;
   official_price?: number;
@@ -66,7 +66,7 @@ export default function ProductSearchModal({ isOpen, onClose, onSelect }: Props)
         list = allProducts.filter(
           (p) =>
             p.name.toLowerCase().includes(qLower) ||
-            (p.natura_sku && p.natura_sku.toLowerCase().includes(qLower)) ||
+            (p.supplier_sku && p.supplier_sku.toLowerCase().includes(qLower)) ||
             (p.bar_code && p.bar_code.includes(qLower))
         );
       }
@@ -168,7 +168,7 @@ export default function ProductSearchModal({ isOpen, onClose, onSelect }: Props)
                   <div className="flex-1 min-w-0">
                     <p className="font-bold text-foreground text-sm truncate">{item.name}</p>
                     <div className="flex gap-2 text-xs text-brand-rose/70 mt-1">
-                      {item.natura_sku && <span>SKU: {item.natura_sku}</span>}
+                      {item.supplier_sku && <span>SKU: {item.supplier_sku}</span>}
                       {item.official_price && (
                         <span className="text-brand font-medium">
                           {formatMoney(item.official_price)}

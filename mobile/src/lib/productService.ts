@@ -2,7 +2,7 @@ export interface Product {
   id?: number;
   name: string;
   bar_code: string;
-  natura_sku?: string; // <--- ADICIONE ISTO
+  supplier_sku?: string; // <--- ADICIONE ISTO
   
   category: string;
   price: number;

@@ -37,7 +37,7 @@ export default function InventorySearchModal({ isOpen, onClose, onSelect }: Inve
     const q = query.toLowerCase();
     const name = (item.product?.name || item.product_name || "").toLowerCase();
     const barcode = item.product?.bar_code || item.barcode || "";
-    const sku = (item.product?.natura_sku || item.sku || "").toLowerCase();
+    const sku = (item.product?.supplier_sku || item.sku || "").toLowerCase();
 
     return name.includes(q) || barcode.includes(q) || sku.includes(q);
   });
@@ -91,7 +91,7 @@ export default function InventorySearchModal({ isOpen, onClose, onSelect }: Inve
                   const qty = item.total_quantity ?? item.quantity ?? 0;
                   const name = item.product?.name || item.product_name || "Sem Nome";
                   const barcode = item.product?.bar_code || item.barcode;
-                  const sku = item.product?.natura_sku || item.sku;
+                  const sku = item.product?.supplier_sku || item.sku;
                   const image = item.product?.image_url || item.image_url;
 
                   return (

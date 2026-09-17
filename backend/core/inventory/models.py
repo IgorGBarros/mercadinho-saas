@@ -79,39 +79,157 @@ class CustomUser(AbstractBaseUser, PermissionsMixin):
 # ==========================================
 
 class Product(models.Model):
-    """Catálogo global de produtos - alimentado por scrapers"""
+    """
+    Catálogo global de produtos, identificado por GTIN/EAN.
+
+    ⚠️ OS CAMPOS FISCAIS NÃO SÃO OPCIONAIS PARA VENDER.
+    Sem NCM, CFOP, CSOSN/CST e origem, o XML da NFC-e é rejeitado pela
+    SEFAZ. Eles são nullable aqui só para permitir cadastro em duas etapas
+    (escaneia agora, completa o fiscal depois) — mas `is_fiscally_ready`
+    é o que decide se o produto pode entrar numa venda com nota.
+    """
+
+    class Origem(models.TextChoices):
+        NACIONAL = '0', '0 — Nacional'
+        IMPORTACAO_DIRETA = '1', '1 — Estrangeira, importação direta'
+        MERCADO_INTERNO = '2', '2 — Estrangeira, adquirida no mercado interno'
+
+    class Unidade(models.TextChoices):
+        UN = 'UN', 'Unidade'
+        KG = 'KG', 'Quilograma'
+        G = 'G', 'Grama'
+        L = 'L', 'Litro'
+        ML = 'ML', 'Mililitro'
+        CX = 'CX', 'Caixa'
+        PCT = 'PCT', 'Pacote'
+        FD = 'FD', 'Fardo'
+
     name = models.CharField(max_length=255, verbose_name="Nome do Produto")
     brand = models.CharField(max_length=100, null=True, blank=True, verbose_name="Marca")
-    
+
     # Identificadores únicos
     bar_code = models.CharField(max_length=50, unique=True, null=True, blank=True, verbose_name="Código de Barras")
-    natura_sku = models.CharField(max_length=50, unique=True, null=True, blank=True, verbose_name="SKU Natura")
-    
+    supplier_sku = models.CharField(max_length=50, unique=True, null=True, blank=True, verbose_name="SKU do Fornecedor")
+
     # Detalhes do produto
     category = models.CharField(max_length=100, default="Geral")
     description = models.TextField(null=True, blank=True)
     image_url = models.URLField(max_length=500, null=True, blank=True)
     min_quantity = models.PositiveIntegerField(default=5)
-    
-    # Preço oficial de referência
-    official_price = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, verbose_name="Preço Site")
-    
-    # Controle do scraper
+
+    # Preço de referência (no mercadinho: custo de fornecedor, não preço de site)
+    official_price = models.DecimalField(max_digits=10, decimal_places=2, default=0.00, verbose_name="Preço de Referência")
+
     last_checked_price = models.DecimalField(max_digits=10, decimal_places=2, null=True)
     last_checked_at = models.DateTimeField(null=True, blank=True, verbose_name="Última Checagem de Preço")
     created_at = models.DateTimeField(auto_now_add=True)
+
+    # ══════════════════════════════════════════════════════════
+    # 🧾 ESPINHA FISCAL — obrigatória para emitir NFC-e
+    # ══════════════════════════════════════════════════════════
+
+    # NCM: 8 dígitos, classifica a mercadoria. Derivável do GTIN em boa
+    # parte dos casos via Cosmos — preencha automático e peça só confirmação
+    # ao lojista. Ninguém digita NCM de 400 itens à mão.
+    ncm = models.CharField(max_length=8, blank=True, verbose_name="NCM")
+
+    # CEST: só para mercadoria sujeita a Substituição Tributária. Muito
+    # comum em bebida, cigarro, sorvete e higiene — ou seja, metade do
+    # mercadinho. Vazio quando não se aplica.
+    cest = models.CharField(max_length=7, blank=True, verbose_name="CEST")
+
+    # 5102 = venda de mercadoria adquirida de terceiros, dentro do estado.
+    # É o caso de praticamente toda venda de mercadinho.
+    cfop = models.CharField(max_length=4, default='5102', verbose_name="CFOP")
+
+    unidade_com = models.CharField(
+        max_length=6, choices=Unidade.choices, default=Unidade.UN,
+        verbose_name="Unidade Comercial"
+    )
+    origem = models.CharField(
+        max_length=1, choices=Origem.choices, default=Origem.NACIONAL
+    )
+
+    # CSOSN (Simples Nacional) vs CST (Presumido/Real) — qual dos dois vale
+    # depende do Operator.tax_regime. 102 = sem permissão de crédito.
+    csosn = models.CharField(max_length=3, default='102', blank=True, verbose_name="CSOSN")
+    cst_icms = models.CharField(max_length=3, blank=True, verbose_name="CST ICMS")
+    cst_pis = models.CharField(max_length=2, default='49', blank=True)
+    cst_cofins = models.CharField(max_length=2, default='49', blank=True)
+    aliq_icms = models.DecimalField(max_digits=5, decimal_places=2, default=0, verbose_name="Alíquota ICMS %")
+
+    # ══════════════════════════════════════════════════════════
+    # 🏪 OPERACIONAL DE MERCADINHO
+    # ══════════════════════════════════════════════════════════
+
+    # Bebida alcoólica e cigarro. Num totem desassistido isto vira trava:
+    # a geladeira não abre sem validação de idade. É exposição legal do
+    # CLIENTE, então trate como requisito, não como recurso.
+    is_age_restricted = models.BooleanField(
+        default=False, verbose_name="Venda restrita por idade"
+    )
+
+    # Item pesado na balança: o código de barras carrega peso ou preço em
+    # vez de identificar o produto. Ver inventory/barcode.py.
+    requires_scale = models.BooleanField(
+        default=False, verbose_name="Vendido a granel (balança)"
+    )
+    scale_plu = models.PositiveIntegerField(
+        null=True, blank=True, verbose_name="PLU da balança",
+        help_text="Código interno impresso na etiqueta da balança."
+    )
+
+    shelf_life_days = models.PositiveIntegerField(
+        null=True, blank=True, verbose_name="Validade padrão (dias)",
+        help_text="Usado para sugerir a data de vencimento no recebimento."
+    )
 
     class Meta:
         verbose_name = 'Produto'
         verbose_name_plural = 'Produtos'
         indexes = [
             models.Index(fields=['bar_code']),
-            models.Index(fields=['natura_sku']),
+            models.Index(fields=['supplier_sku']),
             models.Index(fields=['category']),
+            # Consulta do painel: "quais produtos ainda não posso vender
+            # com nota?" — roda a cada abertura da tela de pendências.
+            models.Index(fields=['ncm'], name='idx_product_ncm'),
+            models.Index(fields=['requires_scale', 'scale_plu']),
+        ]
+        constraints = [
+            models.UniqueConstraint(
+                fields=['scale_plu'],
+                condition=models.Q(requires_scale=True, scale_plu__isnull=False),
+                name='uniq_scale_plu_quando_granel',
+            ),
         ]
 
     def __str__(self):
         return self.name
+
+    @property
+    def is_fiscally_ready(self) -> bool:
+        """
+        Pode entrar numa venda com NFC-e?
+
+        Checagem barata feita ANTES da venda. O caro é descobrir que falta
+        NCM quando a SEFAZ rejeita a nota com o cliente já tendo pago.
+        """
+        return bool(self.ncm and len(self.ncm) == 8 and self.cfop and self.origem)
+
+    @property
+    def fiscal_pendencies(self) -> list:
+        """O que falta, em português, para a tela de pendências."""
+        faltando = []
+        if not self.ncm:
+            faltando.append('NCM')
+        elif len(self.ncm) != 8:
+            faltando.append('NCM inválido (precisa de 8 dígitos)')
+        if not self.cfop:
+            faltando.append('CFOP')
+        if not self.origem:
+            faltando.append('Origem')
+        return faltando
 
 
 class PriceHistory(models.Model):

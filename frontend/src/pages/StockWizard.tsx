@@ -86,7 +86,7 @@ export default function StockWizard() {
             existing.product?.category || existing.category || p.category,
           image_url:
             existing.product?.image_url || existing.image_url || null,
-          sku: existing.product?.natura_sku || existing.sku || null,
+          sku: existing.product?.supplier_sku || existing.sku || null,
           official_price:
             existing.product?.official_price ||
             existing.official_price ||
@@ -210,7 +210,7 @@ export default function StockWizard() {
         bar_code: data.barcode.trim(),
         name: data.product_name || "Produto sem nome",
         category: data.category,
-        natura_sku: data.sku,
+        supplier_sku: data.sku,
         expiration_date: data.expiry_date,
         expiry_photo_url: data.expiry_photo_url,
         quantity: data.quantity,

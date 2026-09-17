@@ -21,7 +21,7 @@ const CATEGORIES = [
 const emptyProduct: Product = {
   name: "",
   bar_code: "",
-  natura_sku: "",
+  supplier_sku: "",
   category: "Perfumaria",
   price: 0,
   sale_price: 0,
@@ -65,7 +65,7 @@ export default function ProductForm() {
             ...prev,
             name: item.product?.name || item.product_name || "",
             bar_code: item.product?.bar_code || item.barcode || "",
-            natura_sku: item.product?.natura_sku || item.sku || "",
+            supplier_sku: item.product?.supplier_sku || item.sku || "",
             category: item.product?.category || item.category || "Outro",
             image_url: item.product?.image_url || item.image_url || "",
             price: item.sale_price || item.product?.official_price || 0,
@@ -108,14 +108,14 @@ export default function ProductForm() {
       ...prev,
       name: suggestion.name,
       price: suggestion.official_price || prev.price,
-      natura_sku: suggestion.natura_sku,
+      supplier_sku: suggestion.supplier_sku,
       description: suggestion.description,
       image_url: suggestion.image_url,
     }));
     setShowSuggestions(false);
     toast({
       title: "Produto Vinculado!",
-      description: `SKU ${suggestion.natura_sku} carregado.`,
+      description: `SKU ${suggestion.supplier_sku} carregado.`,
     });
   };
 
@@ -149,7 +149,7 @@ export default function ProductForm() {
             ...prev,
             name: remote?.name || data?.name || prev.name,
             price: remote?.sale_price || data?.sale_price || prev.price,
-            natura_sku: remote?.natura_sku || data?.natura_sku || prev.natura_sku,
+            supplier_sku: remote?.supplier_sku || data?.supplier_sku || prev.supplier_sku,
             description: remote?.description || data?.description || prev.description,
             image_url: remote?.image_url || data?.image_url || prev.image_url,
             bar_code: ean,
@@ -201,7 +201,7 @@ export default function ProductForm() {
             .patch(`/products/${prodId}/`, {
               name: form.name,
               bar_code: form.bar_code,
-              natura_sku: form.natura_sku,
+              supplier_sku: form.supplier_sku,
               category: form.category,
               image_url: form.image_url,
             })
@@ -223,7 +223,7 @@ export default function ProductForm() {
           bar_code: form.bar_code,
           name: form.name,
           category: form.category,
-          natura_sku: form.natura_sku,
+          supplier_sku: form.supplier_sku,
           quantity: form.quantity,
           cost_price: form.cost_price,
           sale_price: form.price,
@@ -391,8 +391,8 @@ export default function ProductForm() {
               </label>
               <input
                 type="text"
-                value={form.natura_sku || ""}
-                onChange={(e) => handleChange("natura_sku", e.target.value)}
+                value={form.supplier_sku || ""}
+                onChange={(e) => handleChange("supplier_sku", e.target.value)}
                 placeholder="Código do produto no catálogo"
                 className="w-full border border-input rounded-lg px-3 py-2.5 mt-1.5 bg-background outline-none focus:border-brand"
               />

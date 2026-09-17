@@ -40,7 +40,7 @@ interface EntryData {
   bar_code: string;
   name: string;
   category: string;
-  natura_sku: string;
+  supplier_sku: string;
   image_url: string;
   official_price: number;
   sale_price: number;
@@ -75,7 +75,7 @@ const createEmptyEntry = (): EntryData => ({
   bar_code: "",
   name: "",
   category: "Perfumaria",
-  natura_sku: "",
+  supplier_sku: "",
   image_url: "",
   official_price: 0,
   sale_price: 0,
@@ -248,7 +248,7 @@ export default function AddProduct() {
           name: remote?.name || resData?.name || prev.name,
           sale_price: remote?.sale_price || resData?.sale_price || prev.sale_price,
           cost_price: prev.cost_price,
-          natura_sku: remote?.natura_sku || resData?.natura_sku || prev.natura_sku,
+          supplier_sku: remote?.supplier_sku || resData?.supplier_sku || prev.supplier_sku,
           image_url: remote?.image_url || resData?.image_url || prev.image_url,
           category: remote?.category || resData?.category || prev.category,
           official_price: remote?.official_price || resData?.official_price || 0,
@@ -284,7 +284,7 @@ export default function AddProduct() {
       bar_code: product.bar_code || product.barcode || prev.bar_code,
       name: product.name,
       category: product.category || prev.category,
-      natura_sku: product.natura_sku || product.sku || "",
+      supplier_sku: product.supplier_sku || product.sku || "",
       image_url: product.image_url || "",
       official_price: product.official_price || 0,
       sale_price: product.official_price || prev.sale_price,
@@ -327,7 +327,7 @@ export default function AddProduct() {
         bar_code: data.bar_code.trim(),
         name: data.name || "Produto sem nome",
         category: data.category,
-        natura_sku: data.natura_sku,
+        supplier_sku: data.supplier_sku,
         expiration_date: data.expiry_date,
         expiry_photo_url: data.expiry_photo_url,
         quantity: data.quantity,
@@ -784,8 +784,8 @@ export default function AddProduct() {
                   <div>
                     <label className="text-sm font-medium text-foreground">SKU Natura</label>
                     <input
-                      value={data.natura_sku}
-                      onChange={(e) => setData((p) => ({ ...p, natura_sku: e.target.value }))}
+                      value={data.supplier_sku}
+                      onChange={(e) => setData((p) => ({ ...p, supplier_sku: e.target.value }))}
                       className="mt-1 w-full rounded-lg border px-3 py-2 text-sm outline-none"
                       placeholder="Opcional"
                     />
@@ -900,7 +900,7 @@ export default function AddProduct() {
 
                       <div className="space-y-2 rounded-lg bg-secondary/50 p-4 mb-4">
                         <Row label="EAN" value={data.bar_code} />
-                        <Row label="SKU" value={data.natura_sku || "—"} />
+                        <Row label="SKU" value={data.supplier_sku || "—"} />
                         {data.brand && <Row label="Marca" value={data.brand} />}
                         <Row label="Lote" value={data.batch_code || "—"} />
                         <Row label="Validade" value={data.expiry_date || "Não informada"} />

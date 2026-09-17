@@ -163,7 +163,7 @@ export interface InventoryItem {
     id: number | string;
     name: string;
     bar_code: string;
-    natura_sku: string;
+    supplier_sku: string;
     category: string;
     image_url: string;
     official_price: number;
@@ -601,7 +601,7 @@ export interface StorefrontItem {
     id: number | string;
     name: string;
     bar_code: string;
-    natura_sku?: string;
+    supplier_sku?: string;
     category: string;
     brand?: string | null;
     image_url?: string;
